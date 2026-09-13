@@ -25,12 +25,12 @@ void WriteFully(int fd, const void* data, size_t size) {
   size_t to_write = size;
   while (to_write > 0) {
     ssize_t res = write(fd, p, to_write);
-    if (res > 0) {
-      p += res;
-      to_write -= res;
-    } else if (res < 0) {
+    if (res < 0)
       break;
-    }
+    if (res == 0)
+      break;
+    p += res;
+    to_write -= res;
   }
 }
 
@@ -60,27 +60,24 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   if (old_handlers[signo].sa_flags & SA_SIGINFO) {
     if (old_handlers[signo].sa_sigaction) {
       old_handlers[signo].sa_sigaction(signo, info, context);
-    } else {
-      struct sigaction sa = {};
-      sa.sa_handler = SIG_DFL;
-      sigemptyset(&sa.sa_mask);
-      sigaction(signo, &sa, nullptr);
-      raise(signo);
+      return;
     }
   } else {
     if (old_handlers[signo].sa_handler == SIG_IGN) {
-      // Do nothing
-    } else if (old_handlers[signo].sa_handler &&
-               old_handlers[signo].sa_handler != SIG_DFL) {
+      return;
+    }
+    if (old_handlers[signo].sa_handler &&
+        old_handlers[signo].sa_handler != SIG_DFL) {
       old_handlers[signo].sa_handler(signo);
-    } else {
-      struct sigaction sa = {};
-      sa.sa_handler = SIG_DFL;
-      sigemptyset(&sa.sa_mask);
-      sigaction(signo, &sa, nullptr);
-      raise(signo);
+      return;
     }
   }
+
+  struct sigaction sa = {};
+  sa.sa_handler = SIG_DFL;
+  sigemptyset(&sa.sa_mask);
+  sigaction(signo, &sa, nullptr);
+  raise(signo);
 }
 
 }  // namespace
@@ -88,11 +85,11 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
 void SetUpCrashHandler(const char* worker_path,
                        const char* llvm_symbolizer_path) {
   int pipe_to_worker[2];
-  int pipe_from_worker[2];
-
   if (pipe2(pipe_to_worker, O_CLOEXEC) < 0) {
     return;
   }
+
+  int pipe_from_worker[2];
   if (pipe2(pipe_from_worker, O_CLOEXEC) < 0) {
     close(pipe_to_worker[0]);
     close(pipe_to_worker[1]);
@@ -118,23 +115,24 @@ void SetUpCrashHandler(const char* worker_path,
     close(pipe_to_worker[1]);
     close(pipe_from_worker[0]);
     close(pipe_from_worker[1]);
-  } else {
-    worker_stdin_fd = pipe_to_worker[1];
-    worker_stdout_fd = pipe_from_worker[0];
+    posix_spawn_file_actions_destroy(&actions);
+    return;
+  }
 
-    close(pipe_to_worker[0]);
-    close(pipe_from_worker[1]);
+  worker_stdin_fd = pipe_to_worker[1];
+  worker_stdout_fd = pipe_from_worker[0];
 
-    struct sigaction sa = {};
-    sa.sa_sigaction = CrashSignalHandler;
-    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
-    sigemptyset(&sa.sa_mask);
+  close(pipe_to_worker[0]);
+  close(pipe_from_worker[1]);
 
-    int signals[] = {SIGSEGV, SIGILL, SIGFPE, SIGABRT,
-                     SIGTERM, SIGBUS, SIGTRAP};
-    for (int sig : signals) {
-      sigaction(sig, &sa, &old_handlers[sig]);
-    }
+  struct sigaction sa = {};
+  sa.sa_sigaction = CrashSignalHandler;
+  sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+  sigemptyset(&sa.sa_mask);
+
+  int signals[] = {SIGSEGV, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGBUS, SIGTRAP};
+  for (int sig : signals) {
+    sigaction(sig, &sa, &old_handlers[sig]);
   }
 
   posix_spawn_file_actions_destroy(&actions);

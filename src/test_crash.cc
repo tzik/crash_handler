@@ -29,20 +29,23 @@ int main(int argc, char** argv) {
   }
 
   pid_t pid = fork();
+  if (pid < 0) {
+    std::cerr << "fork failed\n";
+    return 1;
+  }
+
   if (pid == 0) {
     SetUpCrashHandler(argv[1], argv[2]);
     intermediate_function();
     exit(1);
-  } else if (pid > 0) {
-    int status;
-    waitpid(pid, &status, 0);
-    if (WIFSIGNALED(status)) {
-      std::cout << "Child crashed with signal " << WTERMSIG(status) << "\n";
-      return 0;
-    }
-    return 1;
-  } else {
-    std::cerr << "fork failed\n";
-    return 1;
   }
+
+  int status;
+  waitpid(pid, &status, 0);
+  if (WIFSIGNALED(status)) {
+    std::cout << "Child crashed with signal " << WTERMSIG(status) << "\n";
+    return 0;
+  }
+
+  return 1;
 }
