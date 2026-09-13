@@ -24,8 +24,9 @@ struct SignalHandlerPair {
   struct sigaction old_handler;
 };
 
-// SIGSEGV, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGBUS, SIGTRAP
-SignalHandlerPair old_handlers[7];
+SignalHandlerPair old_handlers[] = {{SIGSEGV, {}}, {SIGILL, {}},  {SIGFPE, {}},
+                                    {SIGABRT, {}}, {SIGTERM, {}}, {SIGBUS, {}},
+                                    {SIGTRAP, {}}};
 
 void WriteFully(int fd, const void* data, size_t size) {
   const char* p = static_cast<const char*>(data);
@@ -63,26 +64,14 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   }
 
   if (old_sa) {
-    if (old_sa->sa_flags & SA_SIGINFO) {
-      if (old_sa->sa_sigaction) {
-        old_sa->sa_sigaction(signo, info, context);
-        return;
-      }
-    } else {
-      if (old_sa->sa_handler == SIG_IGN) {
-        return;
-      }
-      if (old_sa->sa_handler && old_sa->sa_handler != SIG_DFL) {
-        old_sa->sa_handler(signo);
-        return;
-      }
-    }
+    sigaction(signo, old_sa, nullptr);
+  } else {
+    struct sigaction sa = {};
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(signo, &sa, nullptr);
   }
 
-  struct sigaction sa = {};
-  sa.sa_handler = SIG_DFL;
-  sigemptyset(&sa.sa_mask);
-  sigaction(signo, &sa, nullptr);
   raise(signo);
 }
 
@@ -136,10 +125,8 @@ void SetUpCrashHandler(const char* worker_path,
   sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
   sigemptyset(&sa.sa_mask);
 
-  int signals[] = {SIGSEGV, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGBUS, SIGTRAP};
-  for (int i = 0; i < 7; ++i) {
-    old_handlers[i].signo = signals[i];
-    sigaction(signals[i], &sa, &old_handlers[i].old_handler);
+  for (auto& pair : old_handlers) {
+    sigaction(pair.signo, &sa, &pair.old_handler);
   }
 
   posix_spawn_file_actions_destroy(&actions);

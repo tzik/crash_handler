@@ -258,7 +258,6 @@ int main(int argc, char** argv) {
   waitpid(sym_pid, &status, 0);
   posix_spawn_file_actions_destroy(&actions);
 
-  // Parse result lines
   std::vector<std::string> json_lines;
   std::istringstream iss(result);
   std::string line;
@@ -294,6 +293,7 @@ int main(int argc, char** argv) {
     }
   }
 
+  std::cerr << std::flush;
   char ack = 1;
   write(STDOUT_FILENO, &ack, 1);
 
