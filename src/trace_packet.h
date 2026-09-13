@@ -2,7 +2,7 @@
 
 #include <sys/types.h>
 
-struct CrashData {
+struct TracePacket {
   pid_t process_id;
   int signal_number;
   int stack_depth;

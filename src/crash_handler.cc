@@ -9,7 +9,8 @@
 #include <string>
 #include <vector>
 #include "absl/debugging/stacktrace.h"
-#include "crash_data.h"
+#include "trace_packet.h"
+#include "util.h"
 
 extern char** environ;
 
@@ -18,7 +19,13 @@ namespace {
 int worker_stdin_fd = -1;
 int worker_stdout_fd = -1;
 
-struct sigaction old_handlers[NSIG];
+struct SignalHandlerPair {
+  int signo;
+  struct sigaction old_handler;
+};
+
+// SIGSEGV, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGBUS, SIGTRAP
+SignalHandlerPair old_handlers[7];
 
 void WriteFully(int fd, const void* data, size_t size) {
   const char* p = static_cast<const char*>(data);
@@ -34,18 +41,8 @@ void WriteFully(int fd, const void* data, size_t size) {
   }
 }
 
-std::vector<char*> MakeArgV(std::vector<std::string>* args) {
-  std::vector<char*> argv;
-  argv.reserve(args->size() + 1);
-  for (auto& arg : *args) {
-    argv.push_back(arg.data());
-  }
-  argv.push_back(nullptr);
-  return argv;
-}
-
 void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
-  CrashData data;
+  TracePacket data;
   data.process_id = getpid();
   data.signal_number = signo;
 
@@ -57,19 +54,28 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   char ack = 0;
   read(worker_stdout_fd, &ack, 1);
 
-  if (old_handlers[signo].sa_flags & SA_SIGINFO) {
-    if (old_handlers[signo].sa_sigaction) {
-      old_handlers[signo].sa_sigaction(signo, info, context);
-      return;
+  struct sigaction* old_sa = nullptr;
+  for (auto& pair : old_handlers) {
+    if (pair.signo == signo) {
+      old_sa = &pair.old_handler;
+      break;
     }
-  } else {
-    if (old_handlers[signo].sa_handler == SIG_IGN) {
-      return;
-    }
-    if (old_handlers[signo].sa_handler &&
-        old_handlers[signo].sa_handler != SIG_DFL) {
-      old_handlers[signo].sa_handler(signo);
-      return;
+  }
+
+  if (old_sa) {
+    if (old_sa->sa_flags & SA_SIGINFO) {
+      if (old_sa->sa_sigaction) {
+        old_sa->sa_sigaction(signo, info, context);
+        return;
+      }
+    } else {
+      if (old_sa->sa_handler == SIG_IGN) {
+        return;
+      }
+      if (old_sa->sa_handler && old_sa->sa_handler != SIG_DFL) {
+        old_sa->sa_handler(signo);
+        return;
+      }
     }
   }
 
@@ -131,8 +137,9 @@ void SetUpCrashHandler(const char* worker_path,
   sigemptyset(&sa.sa_mask);
 
   int signals[] = {SIGSEGV, SIGILL, SIGFPE, SIGABRT, SIGTERM, SIGBUS, SIGTRAP};
-  for (int sig : signals) {
-    sigaction(sig, &sa, &old_handlers[sig]);
+  for (int i = 0; i < 7; ++i) {
+    old_handlers[i].signo = signals[i];
+    sigaction(signals[i], &sa, &old_handlers[i].old_handler);
   }
 
   posix_spawn_file_actions_destroy(&actions);

@@ -7,11 +7,13 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
 #include <vector>
-#include "crash_data.h"
+#include "trace_packet.h"
+#include "util.h"
 
 extern char** environ;
 
@@ -63,8 +65,8 @@ uintptr_t GetLoadBias(const std::string& path) {
   return min_vaddr;
 }
 
-std::vector<MapEntry> ReadMaps(pid_t pid) {
-  std::vector<MapEntry> entries;
+std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
+  std::map<uintptr_t, MapEntry> entries;
   std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
@@ -96,79 +98,9 @@ std::vector<MapEntry> ReadMaps(pid_t pid) {
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
     e.load_bias = GetLoadBias(path);
-    entries.push_back(e);
+    entries[e.start] = e;
   }
   return entries;
-}
-
-std::vector<char*> MakeArgV(std::vector<std::string>* args) {
-  std::vector<char*> argv;
-  argv.reserve(args->size() + 1);
-  for (auto& arg : *args) {
-    argv.push_back(arg.data());
-  }
-  argv.push_back(nullptr);
-  return argv;
-}
-
-std::string Symbolize(const std::string& llvm_symbolizer_path,
-                      const std::string& module_path,
-                      uintptr_t offset) {
-  int pipe_to_sym[2];
-  if (pipe(pipe_to_sym) < 0)
-    return "";
-
-  int pipe_from_sym[2];
-  if (pipe(pipe_from_sym) < 0) {
-    close(pipe_to_sym[0]);
-    close(pipe_to_sym[1]);
-    return "";
-  }
-
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-
-  posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
-  posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
-
-  posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
-  posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
-
-  std::vector<std::string> args = {llvm_symbolizer_path, "--output-style=JSON"};
-  std::vector<char*> argv = MakeArgV(&args);
-
-  pid_t pid;
-  if (posix_spawn(&pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
-                  argv.data(), environ) < 0) {
-    close(pipe_to_sym[0]);
-    close(pipe_to_sym[1]);
-    close(pipe_from_sym[0]);
-    close(pipe_from_sym[1]);
-    posix_spawn_file_actions_destroy(&actions);
-    return "";
-  }
-
-  close(pipe_to_sym[0]);
-  close(pipe_from_sym[1]);
-
-  std::string query = std::format("{} 0x{:x}\n", module_path, offset);
-  write(pipe_to_sym[1], query.c_str(), query.size());
-  close(pipe_to_sym[1]);
-
-  std::string result = "";
-  char buf[1024];
-  ssize_t n;
-  while ((n = read(pipe_from_sym[0], buf, sizeof(buf) - 1)) > 0) {
-    buf[n] = '\0';
-    result += buf;
-  }
-  close(pipe_from_sym[0]);
-
-  int status;
-  waitpid(pid, &status, 0);
-
-  posix_spawn_file_actions_destroy(&actions);
-  return result;
 }
 
 void PrintSymbol(const nlohmann::json& sym,
@@ -220,7 +152,7 @@ int main(int argc, char** argv) {
 
   std::string llvm_symbolizer_path = argv[1];
 
-  CrashData data;
+  TracePacket data;
   ssize_t to_read = sizeof(data);
   char* p = reinterpret_cast<char*>(&data);
 
@@ -241,40 +173,124 @@ int main(int argc, char** argv) {
 
   auto maps = ReadMaps(parent_pid);
 
+  int pipe_to_sym[2];
+  if (pipe(pipe_to_sym) < 0)
+    return 1;
+
+  int pipe_from_sym[2];
+  if (pipe(pipe_from_sym) < 0) {
+    close(pipe_to_sym[0]);
+    close(pipe_to_sym[1]);
+    return 1;
+  }
+
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+
+  posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
+
+  posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
+  posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
+
+  std::vector<std::string> args = {llvm_symbolizer_path, "--output-style=JSON"};
+  std::vector<char*> child_argv = MakeArgV(&args);
+
+  pid_t sym_pid;
+  if (posix_spawn(&sym_pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
+                  child_argv.data(), environ) < 0) {
+    close(pipe_to_sym[0]);
+    close(pipe_to_sym[1]);
+    close(pipe_from_sym[0]);
+    close(pipe_from_sym[1]);
+    posix_spawn_file_actions_destroy(&actions);
+    return 1;
+  }
+
+  close(pipe_to_sym[0]);
+  close(pipe_from_sym[1]);
+
+  struct FrameInfo {
+    uintptr_t addr;
+    const MapEntry* entry;
+    uintptr_t offset_in_module;
+  };
+  std::vector<FrameInfo> frames;
+
+  std::string query = "";
   for (int i = 0; i < data.stack_depth; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
 
     const MapEntry* entry = nullptr;
-    for (const auto& m : maps) {
-      if (addr >= m.start && addr < m.end) {
-        entry = &m;
-        break;
+    auto it = maps.upper_bound(addr);
+    if (it != maps.begin()) {
+      --it;
+      if (addr >= it->second.start && addr < it->second.end) {
+        entry = &it->second;
       }
     }
 
     if (!entry) {
-      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
+      frames.push_back({addr, nullptr, 0});
       continue;
     }
 
     uintptr_t offset_in_module =
         addr - entry->start + entry->offset + entry->load_bias;
 
-    std::string json_str =
-        Symbolize(llvm_symbolizer_path, entry->path, offset_in_module);
+    frames.push_back({addr, entry, offset_in_module});
+    query += std::format("{} 0x{:x}\n", entry->path, offset_in_module);
+  }
+
+  write(pipe_to_sym[1], query.c_str(), query.size());
+  close(pipe_to_sym[1]);
+
+  std::string result = "";
+  char buf[4096];
+  ssize_t n;
+  while ((n = read(pipe_from_sym[0], buf, sizeof(buf) - 1)) > 0) {
+    buf[n] = '\0';
+    result += buf;
+  }
+  close(pipe_from_sym[0]);
+
+  int status;
+  waitpid(sym_pid, &status, 0);
+  posix_spawn_file_actions_destroy(&actions);
+
+  // Parse result lines
+  std::vector<std::string> json_lines;
+  std::istringstream iss(result);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (!line.empty()) {
+      json_lines.push_back(line);
+    }
+  }
+
+  int json_idx = 0;
+  for (int i = 0; i < data.stack_depth; ++i) {
+    const auto& frame = frames[i];
+    if (!frame.entry) {
+      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, frame.addr);
+      continue;
+    }
 
     bool printed = false;
-    if (!json_str.empty()) {
+    if (json_idx < json_lines.size()) {
       try {
-        auto j = nlohmann::json::parse(json_str);
-        PrintFrames(j, addr, i, entry->path, offset_in_module, printed);
+        auto j = nlohmann::json::parse(json_lines[json_idx]);
+        PrintFrames(j, frame.addr, i, frame.entry->path, frame.offset_in_module,
+                    printed);
       } catch (...) {
       }
+      json_idx++;
     }
 
     if (!printed) {
       std::cerr << std::format("#{} 0x{:x} in ?? ({} + 0x{:x}) at ??:0\n", i,
-                               addr, entry->path, offset_in_module);
+                               frame.addr, frame.entry->path,
+                               frame.offset_in_module);
     }
   }
 
