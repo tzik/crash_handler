@@ -1,9 +1,9 @@
-#include "crash_handler.h"
 #include <assert.h>
-#include <cstdlib>
-#include <iostream>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cstdlib>
+#include <iostream>
+#include "crash_handler.h"
 
 __attribute__((always_inline)) inline void inline_function() {
   __builtin_trap();
@@ -28,19 +28,21 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // fork and crash in child to test it
   pid_t pid = fork();
   if (pid == 0) {
     SetUpCrashHandler(argv[1], argv[2]);
     intermediate_function();
     exit(1);
-  } else {
+  } else if (pid > 0) {
     int status;
     waitpid(pid, &status, 0);
     if (WIFSIGNALED(status)) {
       std::cout << "Child crashed with signal " << WTERMSIG(status) << "\n";
       return 0;
     }
-    return 1;  // test failed if child didn't crash with signal
+    return 1;
+  } else {
+    std::cerr << "fork failed\n";
+    return 1;
   }
 }

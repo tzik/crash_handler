@@ -3,8 +3,10 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
@@ -18,7 +20,7 @@ namespace {
 struct MapEntry {
   uintptr_t start, end, offset;
   std::string path;
-  uintptr_t load_bias;  // Offset of the first PT_LOAD segment
+  uintptr_t load_bias;
 };
 
 uintptr_t GetLoadBias(const std::string& path) {
@@ -41,7 +43,7 @@ uintptr_t GetLoadBias(const std::string& path) {
     return 0;
   }
 
-  uintptr_t min_vaddr = ~(uintptr_t)0;
+  uintptr_t min_vaddr = std::numeric_limits<uintptr_t>::max();
   for (size_t i = 0; i < phnum; ++i) {
     GElf_Phdr phdr;
     if (gelf_getphdr(elf, i, &phdr) == &phdr) {
@@ -56,12 +58,12 @@ uintptr_t GetLoadBias(const std::string& path) {
   elf_end(elf);
   close(fd);
 
-  return min_vaddr == ~(uintptr_t)0 ? 0 : min_vaddr;
+  return min_vaddr == std::numeric_limits<uintptr_t>::max() ? 0 : min_vaddr;
 }
 
 std::vector<MapEntry> ReadMaps(pid_t pid) {
   std::vector<MapEntry> entries;
-  std::string maps_path = "/proc/" + std::to_string(pid) + "/maps";
+  std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
 
@@ -69,9 +71,7 @@ std::vector<MapEntry> ReadMaps(pid_t pid) {
     std::istringstream iss(line);
     std::string addr, perms, offset, dev, inode, path;
     iss >> addr >> perms >> offset >> dev >> inode;
-    // Path might be empty or missing
     std::getline(iss, path);
-    // Trim leading spaces from path
     size_t first = path.find_first_not_of(" \t");
     if (first != std::string::npos) {
       path = path.substr(first);
@@ -88,8 +88,6 @@ std::vector<MapEntry> ReadMaps(pid_t pid) {
         e.end = std::stoull(addr.substr(dash + 1), nullptr, 16);
         e.offset = std::stoull(offset, nullptr, 16);
         e.path = path;
-        // Calculate load bias for this file only if it's the first time we see
-        // it, or on demand.
         e.load_bias = GetLoadBias(path);
         entries.push_back(e);
       }
@@ -98,13 +96,23 @@ std::vector<MapEntry> ReadMaps(pid_t pid) {
   return entries;
 }
 
+std::vector<char*> MakeArgV(std::vector<std::string>* args) {
+  std::vector<char*> argv;
+  argv.reserve(args->size() + 1);
+  for (auto& arg : *args) {
+    argv.push_back(arg.data());
+  }
+  argv.push_back(nullptr);
+  return argv;
+}
+
 std::string Symbolize(const std::string& llvm_symbolizer_path,
                       const std::string& module_path,
                       uintptr_t offset) {
   int pipe_to_sym[2];
   int pipe_from_sym[2];
 
-  if (pipe(pipe_to_sym) != 0 || pipe(pipe_from_sym) != 0)
+  if (pipe(pipe_to_sym) < 0 || pipe(pipe_from_sym) < 0)
     return "";
 
   posix_spawn_file_actions_t actions;
@@ -116,21 +124,24 @@ std::string Symbolize(const std::string& llvm_symbolizer_path,
   posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
   posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
 
-  char* const argv[] = {(char*)llvm_symbolizer_path.c_str(),
-                        (char*)"--output-style=JSON", nullptr};
+  std::vector<std::string> args = {llvm_symbolizer_path, "--output-style=JSON"};
+  std::vector<char*> argv = MakeArgV(&args);
 
   pid_t pid;
   std::string result = "";
-  if (posix_spawn(&pid, llvm_symbolizer_path.c_str(), &actions, nullptr, argv,
-                  environ) == 0) {
+  if (posix_spawn(&pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
+                  argv.data(), environ) < 0) {
+    close(pipe_to_sym[0]);
+    close(pipe_to_sym[1]);
+    close(pipe_from_sym[0]);
+    close(pipe_from_sym[1]);
+  } else {
     close(pipe_to_sym[0]);
     close(pipe_from_sym[1]);
 
-    std::stringstream ss;
-    ss << module_path << " 0x" << std::hex << offset << "\n";
-    std::string query = ss.str();
+    std::string query = std::format("{} 0x{:x}\n", module_path, offset);
     write(pipe_to_sym[1], query.c_str(), query.size());
-    close(pipe_to_sym[1]);  // Close to signal EOF
+    close(pipe_to_sym[1]);
 
     char buf[1024];
     ssize_t n;
@@ -142,11 +153,6 @@ std::string Symbolize(const std::string& llvm_symbolizer_path,
 
     int status;
     waitpid(pid, &status, 0);
-  } else {
-    close(pipe_to_sym[0]);
-    close(pipe_to_sym[1]);
-    close(pipe_from_sym[0]);
-    close(pipe_from_sym[1]);
   }
 
   posix_spawn_file_actions_destroy(&actions);
@@ -161,11 +167,10 @@ void PrintSymbol(const nlohmann::json& sym,
   std::string function = sym.value("FunctionName", "??");
   std::string file = sym.value("FileName", "??");
   int line = sym.value("Line", 0);
-  std::string source_loc = file + ":" + std::to_string(line);
+  std::string source_loc = std::format("{}:{}", file, line);
 
-  std::cerr << "#" << frame_idx << " 0x" << std::hex << addr << std::dec
-            << " in " << function << " (" << module_path << " + 0x" << std::hex
-            << offset << std::dec << ")" << " at " << source_loc << "\n";
+  std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
+                           addr, function, module_path, offset, source_loc);
 }
 
 }  // namespace
@@ -178,9 +183,8 @@ int main(int argc, char** argv) {
 
   CrashData data;
   ssize_t to_read = sizeof(data);
-  char* p = (char*)&data;
+  char* p = reinterpret_cast<char*>(&data);
 
-  // Read from standard input (which is the pipe from the parent)
   while (to_read > 0) {
     ssize_t res = read(STDIN_FILENO, p, to_read);
     if (res <= 0)
@@ -191,15 +195,14 @@ int main(int argc, char** argv) {
 
   if (to_read == 0) {
     pid_t parent_pid = data.process_id;
-    std::cerr << "\n*** Process " << parent_pid << " crashed with signal "
-              << data.signal_number << " ***\n";
+    std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
+                             parent_pid, data.signal_number);
 
     auto maps = ReadMaps(parent_pid);
 
     for (int i = 0; i < data.stack_depth; ++i) {
-      uintptr_t addr = (uintptr_t)data.stack[i];
+      uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
 
-      // Find map entry
       const MapEntry* entry = nullptr;
       for (const auto& m : maps) {
         if (addr >= m.start && addr < m.end) {
@@ -209,7 +212,6 @@ int main(int argc, char** argv) {
       }
 
       if (entry) {
-        // Address relative to the load base + load bias
         uintptr_t offset_in_module =
             addr - entry->start + entry->offset + entry->load_bias;
 
@@ -223,40 +225,32 @@ int main(int argc, char** argv) {
             if (j.is_array() && !j.empty()) {
               auto& syms = j[0]["Symbol"];
               if (syms.is_array() && !syms.empty()) {
-                // llvm-symbolizer might return multiple entries for inline
-                // functions
                 for (const auto& sym : syms) {
                   PrintSymbol(sym, addr, i, entry->path, offset_in_module);
                 }
                 printed = true;
               }
             } else if (j.is_object() && j.contains("Symbol") &&
-                       j["Symbol"].is_array() &&
-                       !j["Symbol"].empty()) {  // Sometimes llvm-symbolizer
-                                                // returns single object
+                       j["Symbol"].is_array() && !j["Symbol"].empty()) {
               for (const auto& sym : j["Symbol"]) {
                 PrintSymbol(sym, addr, i, entry->path, offset_in_module);
               }
               printed = true;
             }
           } catch (...) {
-            // ignore json parsing errors
           }
         }
 
         if (!printed) {
-          std::cerr << "#" << i << " 0x" << std::hex << addr << std::dec
-                    << " in ??" << " (" << entry->path << " + 0x" << std::hex
-                    << offset_in_module << std::dec << ")" << " at ??:0\n";
+          std::cerr << std::format("#{} 0x{:x} in ?? ({} + 0x{:x}) at ??:0\n",
+                                   i, addr, entry->path, offset_in_module);
         }
       } else {
-        std::cerr << "#" << i << " 0x" << std::hex << addr << std::dec
-                  << " (unknown)\n";
+        std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
       }
     }
   }
 
-  // Signal completion by writing 1 byte to stdout
   char ack = 1;
   write(STDOUT_FILENO, &ack, 1);
 
