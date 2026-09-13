@@ -25,6 +25,19 @@ struct MapEntry {
   uintptr_t load_bias;
 };
 
+bool ReadFully(int fd, void* data, size_t size) {
+  char* p = reinterpret_cast<char*>(data);
+  size_t to_read = size;
+  while (to_read > 0) {
+    ssize_t res = read(fd, p, to_read);
+    if (res <= 0)
+      return false;
+    p += res;
+    to_read -= res;
+  }
+  return true;
+}
+
 uintptr_t GetLoadBias(const std::string& path) {
   if (elf_version(EV_CURRENT) == EV_NONE)
     return 0;
@@ -153,18 +166,7 @@ int main(int argc, char** argv) {
   std::string llvm_symbolizer_path = argv[1];
 
   TracePacket data;
-  ssize_t to_read = sizeof(data);
-  char* p = reinterpret_cast<char*>(&data);
-
-  while (to_read > 0) {
-    ssize_t res = read(STDIN_FILENO, p, to_read);
-    if (res <= 0)
-      break;
-    p += res;
-    to_read -= res;
-  }
-
-  if (to_read != 0)
+  if (!ReadFully(STDIN_FILENO, &data, sizeof(data)))
     return 1;
 
   pid_t parent_pid = data.process_id;
