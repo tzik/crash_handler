@@ -1,17 +1,24 @@
+#include "crash_handler.h"
 #include <assert.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <cstdlib>
 #include <iostream>
-#include "crash_handler.h"
+#include <sys/wait.h>
+#include <unistd.h>
 
-void crash_function() {
-  volatile int* p = nullptr;
-  *p = 42;  // SIGSEGV
+__attribute__((always_inline)) inline void inline_function() {
+  __builtin_trap();
 }
 
-void intermediate_function() {
+__attribute__((noinline)) void crash_function() {
+  inline_function();
+}
+
+__attribute__((noinline)) void intermediate_function_2() {
   crash_function();
+}
+
+__attribute__((noinline)) void intermediate_function() {
+  intermediate_function_2();
 }
 
 int main(int argc, char** argv) {

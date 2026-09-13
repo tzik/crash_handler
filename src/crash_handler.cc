@@ -16,43 +16,38 @@ namespace {
 int worker_stdin_fd = -1;
 int worker_stdout_fd = -1;
 
+void WriteFully(int fd, const void* data, size_t size) {
+  const char* p = static_cast<const char*>(data);
+  size_t to_write = size;
+  while (to_write > 0) {
+    ssize_t res = write(fd, p, to_write);
+    if (res > 0) {
+      p += res;
+      to_write -= res;
+    } else if (res < 0) {
+      break;
+    }
+  }
+}
+
 void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   CrashData data;
   data.process_id = getpid();
   data.signal_number = signo;
 
   // Skip this frame and the signal handler frame
-  int sizes[128];
   data.stack_depth =
-      absl::GetStackTraceWithContext(data.stack, 128, 1, context, sizes);
+      absl::GetStackTraceWithContext(data.stack, 128, 1, context, nullptr);
 
   // Write data to worker via its stdin
-  // Assuming writes < PIPE_BUF are atomic and complete
-  if (worker_stdin_fd != -1) {
-    ssize_t written = 0;
-    const char* p = (const char*)&data;
-    size_t to_write = sizeof(data);
-    while (to_write > 0) {
-      ssize_t res = write(worker_stdin_fd, p, to_write);
-      if (res > 0) {
-        p += res;
-        to_write -= res;
-      } else if (res < 0) {
-        // error writing, break
-        break;
-      }
-    }
+  WriteFully(worker_stdin_fd, &data, sizeof(data));
 
-    // Wait for confirmation byte
-    if (worker_stdout_fd != -1) {
-      char ack = 0;
-      read(worker_stdout_fd, &ack, 1);
-    }
-  }
+  // Wait for confirmation byte
+  char ack = 0;
+  read(worker_stdout_fd, &ack, 1);
 
   // Reset signal handler to default
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
+  struct sigaction sa = {};
   sa.sa_handler = SIG_DFL;
   sigemptyset(&sa.sa_mask);
   sigaction(signo, &sa, nullptr);
@@ -68,7 +63,6 @@ void SetUpCrashHandler(const char* worker_path,
   int pipe_to_worker[2];
   int pipe_from_worker[2];
 
-#ifdef O_CLOEXEC
   if (pipe2(pipe_to_worker, O_CLOEXEC) != 0) {
     return;
   }
@@ -77,19 +71,6 @@ void SetUpCrashHandler(const char* worker_path,
     close(pipe_to_worker[1]);
     return;
   }
-#else
-  if (pipe(pipe_to_worker) != 0)
-    return;
-  if (pipe(pipe_from_worker) != 0) {
-    close(pipe_to_worker[0]);
-    close(pipe_to_worker[1]);
-    return;
-  }
-  fcntl(pipe_to_worker[0], F_SETFD, FD_CLOEXEC);
-  fcntl(pipe_to_worker[1], F_SETFD, FD_CLOEXEC);
-  fcntl(pipe_from_worker[0], F_SETFD, FD_CLOEXEC);
-  fcntl(pipe_from_worker[1], F_SETFD, FD_CLOEXEC);
-#endif
 
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
@@ -108,8 +89,7 @@ void SetUpCrashHandler(const char* worker_path,
   char* const argv[] = {(char*)worker_path, (char*)llvm_symbolizer_path,
                         nullptr};
 
-  pid_t worker_pid;
-  if (posix_spawn(&worker_pid, worker_path, &actions, nullptr, argv, environ) ==
+  if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv, environ) ==
       0) {
     worker_stdin_fd = pipe_to_worker[1];
     worker_stdout_fd = pipe_from_worker[0];
@@ -119,8 +99,7 @@ void SetUpCrashHandler(const char* worker_path,
     close(pipe_from_worker[1]);
 
     // Set up signal handlers
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
+    struct sigaction sa = {};
     sa.sa_sigaction = CrashSignalHandler;
     sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
     sigemptyset(&sa.sa_mask);

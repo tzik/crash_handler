@@ -126,9 +126,9 @@ std::string Symbolize(const std::string& llvm_symbolizer_path,
     close(pipe_to_sym[0]);
     close(pipe_from_sym[1]);
 
-    std::string query = module_path + " 0x" +
-                        (std::stringstream() << std::hex << offset).str() +
-                        "\n";
+    std::stringstream ss;
+    ss << module_path << " 0x" << std::hex << offset << "\n";
+    std::string query = ss.str();
     write(pipe_to_sym[1], query.c_str(), query.size());
     close(pipe_to_sym[1]);  // Close to signal EOF
 
@@ -151,6 +151,21 @@ std::string Symbolize(const std::string& llvm_symbolizer_path,
 
   posix_spawn_file_actions_destroy(&actions);
   return result;
+}
+
+void PrintSymbol(const nlohmann::json& sym,
+                 uintptr_t addr,
+                 int frame_idx,
+                 const std::string& module_path,
+                 uintptr_t offset) {
+  std::string function = sym.value("FunctionName", "??");
+  std::string file = sym.value("FileName", "??");
+  int line = sym.value("Line", 0);
+  std::string source_loc = file + ":" + std::to_string(line);
+
+  std::cerr << "#" << frame_idx << " 0x" << std::hex << addr << std::dec
+            << " in " << function << " (" << module_path << " + 0x" << std::hex
+            << offset << std::dec << ")" << " at " << source_loc << "\n";
 }
 
 }  // namespace
@@ -201,40 +216,39 @@ int main(int argc, char** argv) {
         std::string json_str =
             Symbolize(llvm_symbolizer_path, entry->path, offset_in_module);
 
-        std::string function = "??";
-        std::string source_loc = "??:0";
-
+        bool printed = false;
         if (!json_str.empty()) {
           try {
             auto j = nlohmann::json::parse(json_str);
             if (j.is_array() && !j.empty()) {
-              auto& sym = j[0]["Symbol"];
-              if (sym.is_array() && !sym.empty()) {
-                auto& first_sym = sym[0];
-                function = first_sym.value("FunctionName", "??");
-                std::string file = first_sym.value("FileName", "??");
-                int line = first_sym.value("Line", 0);
-                source_loc = file + ":" + std::to_string(line);
+              auto& syms = j[0]["Symbol"];
+              if (syms.is_array() && !syms.empty()) {
+                // llvm-symbolizer might return multiple entries for inline
+                // functions
+                for (const auto& sym : syms) {
+                  PrintSymbol(sym, addr, i, entry->path, offset_in_module);
+                }
+                printed = true;
               }
             } else if (j.is_object() && j.contains("Symbol") &&
                        j["Symbol"].is_array() &&
                        !j["Symbol"].empty()) {  // Sometimes llvm-symbolizer
                                                 // returns single object
-              auto& first_sym = j["Symbol"][0];
-              function = first_sym.value("FunctionName", "??");
-              std::string file = first_sym.value("FileName", "??");
-              int line = first_sym.value("Line", 0);
-              source_loc = file + ":" + std::to_string(line);
+              for (const auto& sym : j["Symbol"]) {
+                PrintSymbol(sym, addr, i, entry->path, offset_in_module);
+              }
+              printed = true;
             }
           } catch (...) {
             // ignore json parsing errors
           }
         }
 
-        std::cerr << "#" << i << " 0x" << std::hex << addr << std::dec << " in "
-                  << function << " (" << entry->path << " + 0x" << std::hex
-                  << offset_in_module << std::dec << ")" << " at " << source_loc
-                  << "\n";
+        if (!printed) {
+          std::cerr << "#" << i << " 0x" << std::hex << addr << std::dec
+                    << " in ??" << " (" << entry->path << " + 0x" << std::hex
+                    << offset_in_module << std::dec << ")" << " at ??:0\n";
+        }
       } else {
         std::cerr << "#" << i << " 0x" << std::hex << addr << std::dec
                   << " (unknown)\n";
