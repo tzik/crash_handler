@@ -13,7 +13,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include "absl/log/absl_check.h"
 #include "trace_packet.h"
 #include "util.h"
 
@@ -309,7 +308,10 @@ void ProcessCrash(const TracePacket& data,
 
   if (maps.empty()) {
     maps = ReadMaps(parent_pid);
-    ABSL_CHECK(!maps.empty());
+    if (maps.empty()) {
+      std::cerr << "Maps empty, aborting.\n";
+      _exit(1);
+    }
   }
 
   std::string query;
