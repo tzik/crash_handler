@@ -118,9 +118,17 @@ cleanup:
 }
 
 void InstallSignalHandlers() {
+  stack_t ss = {};
+  ss.ss_size = SIGSTKSZ;
+  ss.ss_sp = malloc(ss.ss_size);
+  if (ss.ss_sp != nullptr) {
+    ss.ss_flags = 0;
+    sigaltstack(&ss, nullptr);
+  }
+
   struct sigaction sa = {};
   sa.sa_sigaction = CrashSignalHandler;
-  sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+  sa.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
   sigemptyset(&sa.sa_mask);
 
   for (auto& pair : old_handlers) {
