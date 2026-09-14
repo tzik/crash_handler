@@ -8,11 +8,11 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 #include "absl/base/internal/raw_logging.h"
 #include "trace_packet.h"
 #include "util.h"
@@ -309,6 +309,9 @@ void ProcessCrash(const TracePacket& data,
 
   if (maps.empty()) {
     maps = ReadMaps(parent_pid);
+    // Since the system's version of Abseil does not have absl/log/absl_check.h
+    // or absl::absl_check target, we use ABSL_RAW_CHECK as a fallback for the
+    // user's requested check macro behavior since we are on an older abseil.
     ABSL_RAW_CHECK(!maps.empty(), "Maps empty, aborting.");
   }
 
