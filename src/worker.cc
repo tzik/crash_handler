@@ -25,6 +25,12 @@ struct MapEntry {
   uintptr_t load_bias;
 };
 
+struct FrameInfo {
+  uintptr_t addr;
+  const MapEntry* entry;
+  uintptr_t offset_in_module;
+};
+
 bool ReadFully(int fd, void* data, size_t size) {
   char* p = reinterpret_cast<char*>(data);
   size_t to_read = size;
@@ -205,6 +211,120 @@ pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
   return sym_pid;
 }
 
+std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
+                                      const std::map<uintptr_t, MapEntry>& maps,
+                                      std::string& out_query) {
+  std::vector<FrameInfo> frames;
+  out_query = "";
+
+  for (int i = 0; i < data.stack_depth; ++i) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
+
+    const MapEntry* entry = nullptr;
+    auto it = maps.upper_bound(addr);
+    if (it != maps.begin()) {
+      --it;
+      if (addr >= it->second.start && addr < it->second.end) {
+        entry = &it->second;
+      }
+    }
+
+    if (!entry) {
+      frames.push_back({addr, nullptr, 0});
+      continue;
+    }
+
+    uintptr_t offset_in_module =
+        addr - entry->start + entry->offset + entry->load_bias;
+
+    frames.push_back({addr, entry, offset_in_module});
+    out_query += std::format("{} 0x{:x}\n", entry->path, offset_in_module);
+  }
+
+  return frames;
+}
+
+void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
+                          int sym_pipe_write,
+                          int sym_pipe_read,
+                          const std::string& query,
+                          int stack_depth) {
+  int valid_frames_count = 0;
+  for (const auto& f : frames) {
+    if (f.entry)
+      valid_frames_count++;
+  }
+
+  if (valid_frames_count > 0) {
+    write(sym_pipe_write, query.c_str(), query.size());
+  }
+
+  std::vector<std::string> json_lines;
+
+  for (int i = 0; i < valid_frames_count; ++i) {
+    std::string line;
+    char c;
+    while (read(sym_pipe_read, &c, 1) == 1) {
+      if (c == '\n') {
+        break;
+      }
+      line += c;
+    }
+    json_lines.push_back(line);
+  }
+
+  int json_idx = 0;
+  for (int i = 0; i < stack_depth; ++i) {
+    const auto& frame = frames[i];
+    if (!frame.entry) {
+      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, frame.addr);
+      continue;
+    }
+
+    bool printed = false;
+    if (json_idx < json_lines.size()) {
+      try {
+        auto j = nlohmann::json::parse(json_lines[json_idx]);
+        PrintFrames(j, frame.addr, i, frame.entry->path, frame.offset_in_module,
+                    printed);
+      } catch (...) {
+      }
+      json_idx++;
+    }
+
+    if (!printed) {
+      std::cerr << std::format("#{} 0x{:x} in ?? ({} + 0x{:x}) at ??:0\n", i,
+                               frame.addr, frame.entry->path,
+                               frame.offset_in_module);
+    }
+  }
+}
+
+void ProcessCrash(const TracePacket& data,
+                  std::map<uintptr_t, MapEntry>& maps,
+                  bool& maps_initialized,
+                  int sym_pipe_write,
+                  int sym_pipe_read) {
+  pid_t parent_pid = data.process_id;
+  std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
+                           parent_pid, data.signal_number);
+
+  if (!maps_initialized) {
+    maps = ReadMaps(parent_pid);
+    maps_initialized = true;
+  }
+
+  std::string query;
+  std::vector<FrameInfo> frames = PopulateFrames(data, maps, query);
+
+  FetchAndPrintSymbols(frames, sym_pipe_write, sym_pipe_read, query,
+                       data.stack_depth);
+
+  std::cerr << std::flush;
+  char ack = 1;
+  write(STDOUT_FILENO, &ack, 1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -230,97 +350,7 @@ int main(int argc, char** argv) {
       break;
     }
 
-    pid_t parent_pid = data.process_id;
-    std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
-                             parent_pid, data.signal_number);
-
-    if (!maps_initialized) {
-      maps = ReadMaps(parent_pid);
-      maps_initialized = true;
-    }
-
-    struct FrameInfo {
-      uintptr_t addr;
-      const MapEntry* entry;
-      uintptr_t offset_in_module;
-    };
-    std::vector<FrameInfo> frames;
-
-    std::string query = "";
-    int valid_frames_count = 0;
-
-    for (int i = 0; i < data.stack_depth; ++i) {
-      uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
-
-      const MapEntry* entry = nullptr;
-      auto it = maps.upper_bound(addr);
-      if (it != maps.begin()) {
-        --it;
-        if (addr >= it->second.start && addr < it->second.end) {
-          entry = &it->second;
-        }
-      }
-
-      if (!entry) {
-        frames.push_back({addr, nullptr, 0});
-        continue;
-      }
-
-      uintptr_t offset_in_module =
-          addr - entry->start + entry->offset + entry->load_bias;
-
-      frames.push_back({addr, entry, offset_in_module});
-      query += std::format("{} 0x{:x}\n", entry->path, offset_in_module);
-      valid_frames_count++;
-    }
-
-    if (valid_frames_count > 0) {
-      write(sym_pipe_write, query.c_str(), query.size());
-    }
-
-    std::vector<std::string> json_lines;
-
-    for (int i = 0; i < valid_frames_count; ++i) {
-      std::string line;
-      char c;
-      while (read(sym_pipe_read, &c, 1) == 1) {
-        if (c == '\n') {
-          break;
-        }
-        line += c;
-      }
-      json_lines.push_back(line);
-    }
-
-    int json_idx = 0;
-    for (int i = 0; i < data.stack_depth; ++i) {
-      const auto& frame = frames[i];
-      if (!frame.entry) {
-        std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, frame.addr);
-        continue;
-      }
-
-      bool printed = false;
-      if (json_idx < json_lines.size()) {
-        try {
-          auto j = nlohmann::json::parse(json_lines[json_idx]);
-          PrintFrames(j, frame.addr, i, frame.entry->path,
-                      frame.offset_in_module, printed);
-        } catch (...) {
-        }
-        json_idx++;
-      }
-
-      if (!printed) {
-        std::cerr << std::format("#{} 0x{:x} in ?? ({} + 0x{:x}) at ??:0\n", i,
-                                 frame.addr, frame.entry->path,
-                                 frame.offset_in_module);
-      }
-    }
-
-    std::cerr << std::flush;
-    char ack = 1;
-    write(STDOUT_FILENO, &ack, 1);
+    ProcessCrash(data, maps, maps_initialized, sym_pipe_write, sym_pipe_read);
   }
 
   close(sym_pipe_write);
