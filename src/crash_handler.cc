@@ -28,27 +28,13 @@ SignalHandlerPair old_handlers[] = {{SIGSEGV, {}}, {SIGILL, {}},  {SIGFPE, {}},
                                     {SIGABRT, {}}, {SIGTERM, {}}, {SIGBUS, {}},
                                     {SIGTRAP, {}}};
 
-void WriteFully(int fd, const void* data, size_t size) {
-  const char* p = static_cast<const char*>(data);
-  size_t to_write = size;
-  while (to_write > 0) {
-    ssize_t res = write(fd, p, to_write);
-    if (res < 0)
-      break;
-    if (res == 0)
-      break;
-    p += res;
-    to_write -= res;
-  }
-}
-
 void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   TracePacket data;
   data.process_id = getpid();
   data.signal_number = signo;
 
   data.stack_depth =
-      absl::GetStackTraceWithContext(data.stack, 128, 1, context, nullptr);
+      absl::GetStackTraceWithContext(data.stack, array_size(data.stack), 1, context, nullptr);
 
   WriteFully(worker_stdin_fd, &data, sizeof(data));
 

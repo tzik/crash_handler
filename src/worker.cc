@@ -1,7 +1,6 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <spawn.h>
-#include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <format>
@@ -9,10 +8,12 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <nlohmann/json.hpp>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include "absl/base/internal/raw_logging.h"
 #include "trace_packet.h"
 #include "util.h"
 
@@ -32,37 +33,24 @@ struct FrameInfo {
   uintptr_t offset_in_module;
 };
 
-bool ReadFully(int fd, void* data, size_t size) {
-  char* p = reinterpret_cast<char*>(data);
-  size_t to_read = size;
-  while (to_read > 0) {
-    ssize_t res = read(fd, p, to_read);
-    if (res <= 0)
-      return false;
-    p += res;
-    to_read -= res;
-  }
-  return true;
-}
-
-uintptr_t GetLoadBias(const std::string& path) {
+std::optional<uintptr_t> GetLoadBias(const std::string& path) {
   if (elf_version(EV_CURRENT) == EV_NONE)
-    return 0;
+    return std::nullopt;
   int fd = open(path.c_str(), O_RDONLY);
   if (fd < 0)
-    return 0;
+    return std::nullopt;
 
   Elf* elf = elf_begin(fd, ELF_C_READ, nullptr);
   if (!elf) {
     close(fd);
-    return 0;
+    return std::nullopt;
   }
 
   size_t phnum;
   if (elf_getphdrnum(elf, &phnum) != 0) {
     elf_end(elf);
     close(fd);
-    return 0;
+    return std::nullopt;
   }
 
   uintptr_t min_vaddr = std::numeric_limits<uintptr_t>::max();
@@ -81,7 +69,7 @@ uintptr_t GetLoadBias(const std::string& path) {
   close(fd);
 
   if (min_vaddr == std::numeric_limits<uintptr_t>::max())
-    return 0;
+    return std::nullopt;
   return min_vaddr;
 }
 
@@ -112,12 +100,16 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
     if (dash == std::string::npos)
       continue;
 
+    auto load_bias_opt = GetLoadBias(path);
+    if (!load_bias_opt.has_value())
+      continue;
+
     MapEntry e;
     e.start = std::stoull(addr.substr(0, dash), nullptr, 16);
     e.end = std::stoull(addr.substr(dash + 1), nullptr, 16);
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
-    e.load_bias = GetLoadBias(path);
+    e.load_bias = load_bias_opt.value();
     entries[e.start] = e;
   }
   return entries;
@@ -216,7 +208,7 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       const std::map<uintptr_t, MapEntry>& maps,
                                       std::string& out_query) {
   std::vector<FrameInfo> frames;
-  out_query = "";
+  std::ostringstream oss;
 
   for (int i = 0; i < data.stack_depth; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
@@ -239,9 +231,10 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
         addr - entry->start + entry->offset + entry->load_bias;
 
     frames.push_back({addr, entry, offset_in_module});
-    out_query += std::format("{} 0x{:x}\n", entry->path, offset_in_module);
+    oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
   }
 
+  out_query = oss.str();
   return frames;
 }
 
@@ -261,17 +254,26 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
     fflush(sym_out);
   }
 
-  std::vector<std::string> json_lines;
+  std::vector<nlohmann::json> parsed_jsons;
 
-  char* line_ptr = nullptr;
-  size_t len = 0;
   for (int i = 0; i < valid_frames_count; ++i) {
+    char* line_ptr = nullptr;
+    size_t len = 0;
     if (getline(&line_ptr, &len, sym_in) != -1) {
-      json_lines.push_back(line_ptr);
+      std::string line = line_ptr;
+      free(line_ptr);
+
+      try {
+        auto j = nlohmann::json::parse(line);
+        parsed_jsons.push_back(std::move(j));
+      } catch (...) {
+        parsed_jsons.push_back(nlohmann::json());
+      }
+    } else {
+      if (line_ptr)
+        free(line_ptr);
+      parsed_jsons.push_back(nlohmann::json());
     }
-  }
-  if (line_ptr) {
-    free(line_ptr);
   }
 
   int json_idx = 0;
@@ -283,13 +285,9 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
     }
 
     bool printed = false;
-    if (json_idx < json_lines.size()) {
-      try {
-        auto j = nlohmann::json::parse(json_lines[json_idx]);
-        PrintFrames(j, frame.addr, i, frame.entry->path, frame.offset_in_module,
-                    printed);
-      } catch (...) {
-      }
+    if (json_idx < parsed_jsons.size()) {
+      PrintFrames(parsed_jsons[json_idx], frame.addr, i, frame.entry->path,
+                  frame.offset_in_module, printed);
       json_idx++;
     }
 
@@ -303,16 +301,15 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
 
 void ProcessCrash(const TracePacket& data,
                   std::map<uintptr_t, MapEntry>& maps,
-                  bool& maps_initialized,
                   FILE* sym_out,
                   FILE* sym_in) {
   pid_t parent_pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
                            parent_pid, data.signal_number);
 
-  if (!maps_initialized) {
+  if (maps.empty()) {
     maps = ReadMaps(parent_pid);
-    maps_initialized = true;
+    ABSL_RAW_CHECK(!maps.empty(), "Maps empty, aborting.");
   }
 
   std::string query;
@@ -356,15 +353,10 @@ int main(int argc, char** argv) {
   }
 
   std::map<uintptr_t, MapEntry> maps;
-  bool maps_initialized = false;
 
-  while (true) {
-    TracePacket data;
-    if (!ReadFully(STDIN_FILENO, &data, sizeof(data))) {
-      break;
-    }
-
-    ProcessCrash(data, maps, maps_initialized, sym_out, sym_in);
+  TracePacket packet;
+  while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
+    ProcessCrash(packet, maps, sym_out, sym_in);
   }
 
   fclose(sym_out);

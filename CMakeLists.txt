@@ -20,7 +20,7 @@ target_link_libraries(crash_handler PUBLIC absl::stacktrace crash_util)
 target_include_directories(crash_handler PUBLIC include)
 
 add_executable(crash_handler_worker src/worker.cc)
-target_link_libraries(crash_handler_worker PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBELF crash_util)
+target_link_libraries(crash_handler_worker PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBELF crash_util absl::raw_logging_internal)
 
 add_executable(test_crash src/test_crash.cc)
 target_link_libraries(test_crash PRIVATE crash_handler)
