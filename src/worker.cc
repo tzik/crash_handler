@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <format>
@@ -245,8 +246,8 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
 }
 
 void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
-                          int sym_pipe_write,
-                          int sym_pipe_read,
+                          FILE* sym_out,
+                          FILE* sym_in,
                           const std::string& query,
                           int stack_depth) {
   int valid_frames_count = 0;
@@ -256,21 +257,21 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
   }
 
   if (valid_frames_count > 0) {
-    write(sym_pipe_write, query.c_str(), query.size());
+    fwrite(query.c_str(), 1, query.size(), sym_out);
+    fflush(sym_out);
   }
 
   std::vector<std::string> json_lines;
 
+  char* line_ptr = nullptr;
+  size_t len = 0;
   for (int i = 0; i < valid_frames_count; ++i) {
-    std::string line;
-    char c;
-    while (read(sym_pipe_read, &c, 1) == 1) {
-      if (c == '\n') {
-        break;
-      }
-      line += c;
+    if (getline(&line_ptr, &len, sym_in) != -1) {
+      json_lines.push_back(line_ptr);
     }
-    json_lines.push_back(line);
+  }
+  if (line_ptr) {
+    free(line_ptr);
   }
 
   int json_idx = 0;
@@ -303,8 +304,8 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
 void ProcessCrash(const TracePacket& data,
                   std::map<uintptr_t, MapEntry>& maps,
                   bool& maps_initialized,
-                  int sym_pipe_write,
-                  int sym_pipe_read) {
+                  FILE* sym_out,
+                  FILE* sym_in) {
   pid_t parent_pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
                            parent_pid, data.signal_number);
@@ -317,8 +318,7 @@ void ProcessCrash(const TracePacket& data,
   std::string query;
   std::vector<FrameInfo> frames = PopulateFrames(data, maps, query);
 
-  FetchAndPrintSymbols(frames, sym_pipe_write, sym_pipe_read, query,
-                       data.stack_depth);
+  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth);
 
   std::cerr << std::flush;
   char ack = 1;
@@ -341,6 +341,20 @@ int main(int argc, char** argv) {
   if (sym_pid < 0)
     return 1;
 
+  FILE* sym_out = fdopen(sym_pipe_write, "w");
+  if (!sym_out) {
+    close(sym_pipe_write);
+    close(sym_pipe_read);
+    return 1;
+  }
+
+  FILE* sym_in = fdopen(sym_pipe_read, "r");
+  if (!sym_in) {
+    fclose(sym_out);
+    close(sym_pipe_read);
+    return 1;
+  }
+
   std::map<uintptr_t, MapEntry> maps;
   bool maps_initialized = false;
 
@@ -350,11 +364,11 @@ int main(int argc, char** argv) {
       break;
     }
 
-    ProcessCrash(data, maps, maps_initialized, sym_pipe_write, sym_pipe_read);
+    ProcessCrash(data, maps, maps_initialized, sym_out, sym_in);
   }
 
-  close(sym_pipe_write);
-  close(sym_pipe_read);
+  fclose(sym_out);
+  fclose(sym_in);
 
   int status;
   waitpid(sym_pid, &status, 0);
