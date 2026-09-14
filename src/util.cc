@@ -1,4 +1,5 @@
 #include "util.h"
+#include <errno.h>
 #include <unistd.h>
 
 std::vector<char*> MakeArgV(std::vector<std::string>* args) {
@@ -16,8 +17,11 @@ bool ReadFully(int fd, void* data, size_t size) {
   size_t to_read = size;
   while (to_read > 0) {
     ssize_t res = read(fd, p, to_read);
-    if (res <= 0)
+    if (res <= 0) {
+      if (res < 0 && errno == EINTR)
+        continue;
       return false;
+    }
     p += res;
     to_read -= res;
   }
@@ -29,8 +33,11 @@ void WriteFully(int fd, const void* data, size_t size) {
   size_t to_write = size;
   while (to_write > 0) {
     ssize_t res = write(fd, p, to_write);
-    if (res < 0)
+    if (res < 0) {
+      if (errno == EINTR)
+        continue;
       break;
+    }
     if (res == 0)
       break;
     p += res;
