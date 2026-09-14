@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include "absl/debugging/stacktrace.h"
 #include "trace_packet.h"
@@ -33,8 +34,8 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   data.process_id = getpid();
   data.signal_number = signo;
 
-  data.stack_depth =
-      absl::GetStackTraceWithContext(data.stack, array_size(data.stack), 1, context, nullptr);
+  data.stack_depth = absl::GetStackTraceWithContext(
+      data.stack, array_size(data.stack), 1, context, nullptr);
 
   WriteFully(worker_stdin_fd, &data, sizeof(data));
 
@@ -61,51 +62,62 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   raise(signo);
 }
 
-}  // namespace
+bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path) {
+  int pipe_to_worker[2] = {-1, -1};
+  int pipe_from_worker[2] = {-1, -1};
+  std::vector<char*> argv;
+  bool success = false;
 
-void SetUpCrashHandler(const char* worker_path,
-                       const char* llvm_symbolizer_path) {
-  int pipe_to_worker[2];
   if (pipe2(pipe_to_worker, O_CLOEXEC) < 0) {
-    return;
+    goto cleanup;
   }
 
-  int pipe_from_worker[2];
   if (pipe2(pipe_from_worker, O_CLOEXEC) < 0) {
-    close(pipe_to_worker[0]);
-    close(pipe_to_worker[1]);
-    return;
+    goto cleanup;
   }
 
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
+  {
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
 
-  posix_spawn_file_actions_adddup2(&actions, pipe_to_worker[0], STDIN_FILENO);
-  posix_spawn_file_actions_adddup2(&actions, pipe_from_worker[1],
-                                   STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_to_worker[0], STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_from_worker[1],
+                                     STDOUT_FILENO);
 
-  posix_spawn_file_actions_addclose(&actions, pipe_to_worker[1]);
-  posix_spawn_file_actions_addclose(&actions, pipe_from_worker[0]);
+    posix_spawn_file_actions_addclose(&actions, pipe_to_worker[1]);
+    posix_spawn_file_actions_addclose(&actions, pipe_from_worker[0]);
 
-  std::vector<std::string> args = {worker_path, llvm_symbolizer_path};
-  std::vector<char*> argv = MakeArgV(&args);
+    std::vector<std::string> args = {worker_path, llvm_symbolizer_path};
+    argv = MakeArgV(&args);
 
-  if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv.data(),
-                  environ) < 0) {
-    close(pipe_to_worker[0]);
-    close(pipe_to_worker[1]);
-    close(pipe_from_worker[0]);
-    close(pipe_from_worker[1]);
+    if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv.data(),
+                    environ) < 0) {
+      posix_spawn_file_actions_destroy(&actions);
+      goto cleanup;
+    }
+
     posix_spawn_file_actions_destroy(&actions);
-    return;
   }
 
-  worker_stdin_fd = pipe_to_worker[1];
-  worker_stdout_fd = pipe_from_worker[0];
+  worker_stdin_fd = std::exchange(pipe_to_worker[1], -1);
+  worker_stdout_fd = std::exchange(pipe_from_worker[0], -1);
 
-  close(pipe_to_worker[0]);
-  close(pipe_from_worker[1]);
+  success = true;
 
+cleanup:
+  if (pipe_to_worker[0] != -1)
+    close(pipe_to_worker[0]);
+  if (pipe_to_worker[1] != -1)
+    close(pipe_to_worker[1]);
+  if (pipe_from_worker[0] != -1)
+    close(pipe_from_worker[0]);
+  if (pipe_from_worker[1] != -1)
+    close(pipe_from_worker[1]);
+
+  return success;
+}
+
+void InstallSignalHandlers() {
   struct sigaction sa = {};
   sa.sa_sigaction = CrashSignalHandler;
   sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
@@ -114,6 +126,13 @@ void SetUpCrashHandler(const char* worker_path,
   for (auto& pair : old_handlers) {
     sigaction(pair.signo, &sa, &pair.old_handler);
   }
+}
 
-  posix_spawn_file_actions_destroy(&actions);
+}  // namespace
+
+void SetUpCrashHandler(const char* worker_path,
+                       const char* llvm_symbolizer_path) {
+  if (SpawnWorker(worker_path, llvm_symbolizer_path)) {
+    InstallSignalHandlers();
+  }
 }
