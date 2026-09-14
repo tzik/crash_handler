@@ -12,6 +12,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include "trace_packet.h"
 #include "util.h"
@@ -158,47 +159,52 @@ void PrintFrames(const nlohmann::json& j,
 pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
                       int* out_pipe_write,
                       int* out_pipe_read) {
-  int pipe_to_sym[2];
+  int pipe_to_sym[2] = {-1, -1};
+  int pipe_from_sym[2] = {-1, -1};
+  pid_t sym_pid = -1;
+
   if (pipe(pipe_to_sym) < 0) {
-    return -1;
+    goto cleanup;
   }
 
-  int pipe_from_sym[2];
   if (pipe(pipe_from_sym) < 0) {
-    close(pipe_to_sym[0]);
-    close(pipe_to_sym[1]);
-    return -1;
+    goto cleanup;
   }
 
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
+  {
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
 
-  posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
-  posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
 
-  posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
-  posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
+    posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
+    posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
 
-  std::vector<std::string> args = {llvm_symbolizer_path, "--output-style=JSON"};
-  std::vector<char*> child_argv = MakeArgV(&args);
+    std::vector<std::string> args = {llvm_symbolizer_path,
+                                     "--output-style=JSON"};
+    std::vector<char*> child_argv = MakeArgV(&args);
 
-  pid_t sym_pid;
-  if (posix_spawn(&sym_pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
-                  child_argv.data(), environ) < 0) {
-    close(pipe_to_sym[0]);
-    close(pipe_to_sym[1]);
-    close(pipe_from_sym[0]);
-    close(pipe_from_sym[1]);
+    if (posix_spawn(&sym_pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
+                    child_argv.data(), environ) < 0) {
+      posix_spawn_file_actions_destroy(&actions);
+      goto cleanup;
+    }
     posix_spawn_file_actions_destroy(&actions);
-    return -1;
   }
-  posix_spawn_file_actions_destroy(&actions);
 
-  close(pipe_to_sym[0]);
-  close(pipe_from_sym[1]);
+  *out_pipe_write = std::exchange(pipe_to_sym[1], -1);
+  *out_pipe_read = std::exchange(pipe_from_sym[0], -1);
 
-  *out_pipe_write = pipe_to_sym[1];
-  *out_pipe_read = pipe_from_sym[0];
+cleanup:
+  if (pipe_to_sym[0] != -1)
+    close(pipe_to_sym[0]);
+  if (pipe_to_sym[1] != -1)
+    close(pipe_to_sym[1]);
+  if (pipe_from_sym[0] != -1)
+    close(pipe_from_sym[0]);
+  if (pipe_from_sym[1] != -1)
+    close(pipe_from_sym[1]);
 
   return sym_pid;
 }
