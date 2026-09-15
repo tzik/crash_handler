@@ -63,13 +63,20 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path, uintptr_t map_s
     if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
       continue;
     }
-    // Find the PT_LOAD segment that corresponds to the mmap offset
+    // Find the executable PT_LOAD segment that corresponds to the mmap offset
+    if ((phdr.p_flags & PF_X) == 0) {
+      continue;
+    }
+
     uintptr_t page_size = sysconf(_SC_PAGESIZE);
     uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-    uintptr_t phdr_end = phdr.p_offset + phdr.p_filesz;
+    uintptr_t phdr_end = (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
     if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
-      uintptr_t vaddr_in_file = phdr.p_vaddr + (map_offset - phdr.p_offset);
+      // map_start corresponds to phdr_offset_aligned mapped to memory
+      // The virtual address of map_start in ELF is phdr.p_vaddr & ~(page_size - 1)
+      // Therefore, vaddr for map_offset = (phdr.p_vaddr & ~(page_size - 1)) + (map_offset - phdr_offset_aligned)
+      uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) + (map_offset - phdr_offset_aligned);
       base_address = map_start - vaddr_in_file;
       break;
     }
