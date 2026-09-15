@@ -49,6 +49,22 @@ int main(int argc, char** argv) {
 }
 ```
 
+### Sample Output
+
+When a crash occurs, CrashHandler will output a detailed stack trace similar to the following:
+
+```
+*** Process 36186 crashed with signal 4 ***
+#0 0x7f96f45d1330 in  (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x45330) at :0
+#1 0x564511def5a0 in intermediate_function_2() (/app/build/test_crash + 0x25a0) at :0
+#2 0x564511def5b0 in intermediate_function() (/app/build/test_crash + 0x25b0) at :0
+#3 0x564511def6a3 in main (/app/build/test_crash + 0x26a3) at :0
+#4 0x7f96f45b61ca in __libc_start_call_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1ca) at ./csu/../sysdeps/nptl/libc_start_call_main.h:74
+#5 0x7f96f45b628b in call_init (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28b) at ./csu/../csu/libc-start.c:128
+#5 0x7f96f45b628b in __libc_start_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28b) at ./csu/../csu/libc-start.c:347
+#6 0x564511def4c5 in _start (/app/build/test_crash + 0x24c5) at :0
+```
+
 ## CMake Integration
 
 You can integrate CrashHandler into your existing CMake project. Use `find_package` to locate it and link against the `CrashHandler::crash_handler` target.
