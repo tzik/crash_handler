@@ -139,15 +139,21 @@ void PrintSymbol(const nlohmann::json& sym,
                  const std::string& strip_path_prefix) {
   std::string function = sym.value("FunctionName", "??");
   std::string file = sym.value("FileName", "??");
+  std::string display_module_path = module_path;
 
-  if (!strip_path_prefix.empty() && file.starts_with(strip_path_prefix)) {
-    file = file.substr(strip_path_prefix.length());
+  if (!strip_path_prefix.empty()) {
+    if (file.starts_with(strip_path_prefix)) {
+      file = file.substr(strip_path_prefix.length());
+    }
+    if (display_module_path.starts_with(strip_path_prefix)) {
+      display_module_path = display_module_path.substr(strip_path_prefix.length());
+    }
   }
   int line = sym.value("Line", 0);
   std::string source_loc = std::format("{}:{}", file, line);
 
   std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
-                           addr, function, module_path, offset, source_loc);
+                           addr, function, display_module_path, offset, source_loc);
 }
 
 void PrintFrames(const nlohmann::json& j,
