@@ -1,12 +1,6 @@
 # CrashHandler
 
-CrashHandler is a robust, out-of-process crash handling library for C++ applications. It captures stack traces when a crash occurs and resolves symbols using a separate worker process and `llvm-symbolizer`.
-
-## Features
-- **Out-of-Process Resolution**: Spawns a separate worker process to safely handle crash reporting and resolve stack traces, avoiding further corruption or deadlocks in the crashed process.
-- **Detailed Stack Traces**: Integrates with `llvm-symbolizer` to provide accurate, demangled stack traces with file names and line numbers.
-- **Easy Integration**: Provides a simple C-compatible API (`SetUpCrashHandler`) to set up the crash handler with minimal effort.
-- **CMake Support**: Can be easily integrated into existing projects as a CMake package.
+CrashHandler is a out-of-process crash handling library for C/C++ applications. It captures stack traces when a crash occurs and resolves symbols using a separate worker process.
 
 ## License
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
@@ -18,10 +12,8 @@ This project relies on the following external libraries and tools:
 - **libelf**: Required for reading ELF files to help with symbolization.
 - **nlohmann_json**: Used for structured communication between the main process and the crash handler worker.
 - **llvm-symbolizer**: External tool invoked by the worker to resolve addresses to source code locations.
-- **CMake**: Build system used to compile the project.
-- **pkg-config**: Used during the build to locate `libelf`.
 
-### Supplemental: Installing Dependencies on Debian/Ubuntu
+### Installing Dependencies on Debian/Ubuntu
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
@@ -78,6 +70,6 @@ You can build the project using standard CMake commands.
    You can run the test executable to verify that the crash handler works correctly. It simulates a crash and outputs the stack trace.
    ```bash
    # Make sure you are in the build directory
-   ./test_crash ./crash_handler_worker $(which llvm-symbolizer)
+   ./test_crash ./crash_handler_worker "$(which llvm-symbolizer)"
    ```
    *Note: If you want to test the `strip_path_prefix` feature, you can append a prefix string as a third argument to `test_crash`.*
