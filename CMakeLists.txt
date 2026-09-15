@@ -14,14 +14,12 @@ include(CMakePackageConfigHelpers)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
 
-find_package(absl REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 add_library(crash_util OBJECT src/util.cc)
 
 add_library(crash_handler src/crash_handler.cc $<TARGET_OBJECTS:crash_util>)
 target_compile_definitions(crash_handler PRIVATE CRASH_HANDLER_IMPLEMENTATION)
-target_link_libraries(crash_handler PUBLIC absl::stacktrace)
 target_include_directories(crash_handler PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

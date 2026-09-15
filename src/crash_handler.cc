@@ -10,8 +10,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <absl/debugging/stacktrace.h>
+#include <unwind.h>
 
 #include "trace_packet.h"
 #include "util.h"
@@ -31,13 +30,31 @@ struct SignalHandlerPair {
 SignalHandlerPair old_handlers[] = {{SIGSEGV}, {SIGILL}, {SIGFPE}, {SIGABRT},
                                     {SIGTERM}, {SIGBUS}, {SIGTRAP}};
 
+struct UnwindState {
+  void** stack;
+  int size;
+  int depth;
+};
+
+_Unwind_Reason_Code UnwindCallback(struct _Unwind_Context* context, void* arg) {
+  UnwindState* state = static_cast<UnwindState*>(arg);
+  if (state->depth >= state->size) return _URC_END_OF_STACK;
+  state->stack[state->depth++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
+  return _URC_NO_REASON;
+}
+
+int GetStackTraceUnwind(void** stack, int size) {
+  UnwindState state = {stack, size, 0};
+  _Unwind_Backtrace(UnwindCallback, &state);
+  return state.depth;
+}
+
 void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   TracePacket data;
   data.process_id = getpid();
   data.signal_number = signo;
 
-  data.stack_depth = absl::GetStackTraceWithContext(
-      data.stack, array_size(data.stack), 1, context, nullptr);
+  data.stack_depth = GetStackTraceUnwind(data.stack, array_size(data.stack));
 
   WriteFully(worker_stdin_fd, &data, sizeof(data));
 
