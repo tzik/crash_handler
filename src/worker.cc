@@ -27,7 +27,7 @@ namespace {
 struct MapEntry {
   uintptr_t start, end, offset;
   std::string path;
-  uintptr_t load_bias;
+  uintptr_t base_address;
 };
 
 struct FrameInfo {
@@ -36,7 +36,7 @@ struct FrameInfo {
   uintptr_t offset_in_module;
 };
 
-std::optional<uintptr_t> GetLoadBias(const std::string& path) {
+std::optional<uintptr_t> GetBaseAddress(const std::string& path, uintptr_t map_start, uintptr_t map_offset) {
   if (elf_version(EV_CURRENT) == EV_NONE)
     return std::nullopt;
   int fd = open(path.c_str(), O_RDONLY);
@@ -56,22 +56,29 @@ std::optional<uintptr_t> GetLoadBias(const std::string& path) {
     return std::nullopt;
   }
 
-  uintptr_t min_vaddr = std::numeric_limits<uintptr_t>::max();
+  std::optional<uintptr_t> base_address;
+
   for (size_t i = 0; i < phnum; ++i) {
     GElf_Phdr phdr;
     if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
       continue;
     }
-    if (phdr.p_vaddr < min_vaddr)
-      min_vaddr = phdr.p_vaddr;
+    // Find the PT_LOAD segment that corresponds to the mmap offset
+    uintptr_t page_size = sysconf(_SC_PAGESIZE);
+    uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
+    uintptr_t phdr_end = phdr.p_offset + phdr.p_filesz;
+
+    if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
+      uintptr_t vaddr_in_file = phdr.p_vaddr + (map_offset - phdr.p_offset);
+      base_address = map_start - vaddr_in_file;
+      break;
+    }
   }
 
   elf_end(elf);
   close(fd);
 
-  if (min_vaddr == std::numeric_limits<uintptr_t>::max())
-    return std::nullopt;
-  return min_vaddr;
+  return base_address;
 }
 
 std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
@@ -101,16 +108,17 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
     if (dash == std::string::npos)
       continue;
 
-    auto load_bias_opt = GetLoadBias(path);
-    if (!load_bias_opt.has_value())
-      continue;
-
     MapEntry e;
     e.start = std::stoull(addr.substr(0, dash), nullptr, 16);
     e.end = std::stoull(addr.substr(dash + 1), nullptr, 16);
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
-    e.load_bias = load_bias_opt.value();
+
+    auto base_addr_opt = GetBaseAddress(path, e.start, e.offset);
+    if (!base_addr_opt.has_value())
+      continue;
+
+    e.base_address = base_addr_opt.value();
     entries[e.start] = e;
   }
   return entries;
@@ -210,6 +218,16 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       std::string* out_query) {
   std::vector<FrameInfo> frames;
   std::ostringstream oss;
+  bool dump_maps = getenv("CRASH_HANDLER_DUMP_MAPS") != nullptr;
+
+  if (dump_maps) {
+    std::cerr << "--- CRASH_HANDLER_DUMP_MAPS ---\n";
+    for (const auto& [start, entry] : maps) {
+      std::cerr << std::format("{:x}-{:x} offset={:x} base={:x} {}\n",
+                               entry.start, entry.end, entry.offset, entry.base_address, entry.path);
+    }
+    std::cerr << "-------------------------------\n";
+  }
 
   for (int i = 0; i < data.stack_depth; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
@@ -225,11 +243,18 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
 
     if (!entry) {
       frames.push_back({addr, nullptr, 0});
+      if (dump_maps) {
+        std::cerr << std::format("Frame #{}: addr=0x{:x} (no map entry found)\n", i, addr);
+      }
       continue;
     }
 
-    uintptr_t offset_in_module =
-        addr - entry->start + entry->offset + entry->load_bias;
+    uintptr_t offset_in_module = addr - entry->base_address;
+
+    if (dump_maps) {
+      std::cerr << std::format("Frame #{}: addr=0x{:x} base=0x{:x} offset=0x{:x} path={}\n",
+                               i, addr, entry->base_address, offset_in_module, entry->path);
+    }
 
     frames.push_back({addr, entry, offset_in_module});
     oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
