@@ -49,6 +49,18 @@ int main(int argc, char** argv) {
 }
 ```
 
+## CMake Integration
+
+You can easily integrate CrashHandler into your existing CMake project. Use `find_package` to locate it and link against the `CrashHandler::crash_handler` target.
+
+```cmake
+find_package(CrashHandler REQUIRED)
+
+# ... define your target ...
+
+target_link_libraries(your_target PRIVATE CrashHandler::crash_handler)
+```
+
 ## Build Instructions
 
 You can build the project using standard CMake commands.
