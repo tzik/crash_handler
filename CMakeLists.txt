@@ -28,7 +28,8 @@ target_include_directories(crash_handler PUBLIC
 )
 
 add_executable(crash_handler_worker src/worker.cc $<TARGET_OBJECTS:crash_util>)
-target_link_libraries(crash_handler_worker PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBELF)
+target_link_libraries(crash_handler_worker PRIVATE
+  nlohmann_json::nlohmann_json PkgConfig::LIBELF)
 
 add_executable(test_crash src/test_crash.cc)
 target_link_libraries(test_crash PRIVATE crash_handler)
@@ -38,7 +39,7 @@ install(TARGETS crash_handler crash_handler_worker
     EXPORT CrashHandlerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/CrashHandler
+    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
 )
 
 install(DIRECTORY include/
