@@ -1,3 +1,4 @@
+
 #include <fcntl.h>
 #include <gelf.h>
 #include <spawn.h>
@@ -8,12 +9,14 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+
 #include "trace_packet.h"
 #include "util.h"
 
@@ -56,13 +59,11 @@ std::optional<uintptr_t> GetLoadBias(const std::string& path) {
   uintptr_t min_vaddr = std::numeric_limits<uintptr_t>::max();
   for (size_t i = 0; i < phnum; ++i) {
     GElf_Phdr phdr;
-    if (gelf_getphdr(elf, i, &phdr) != &phdr)
+    if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
       continue;
-    if (phdr.p_type != PT_LOAD)
-      continue;
-    if (phdr.p_vaddr < min_vaddr) {
-      min_vaddr = phdr.p_vaddr;
     }
+    if (phdr.p_vaddr < min_vaddr)
+      min_vaddr = phdr.p_vaddr;
   }
 
   elf_end(elf);
@@ -139,9 +140,8 @@ void PrintFrames(const nlohmann::json& j,
     auto& syms = j[0]["Symbol"];
     if (!syms.is_array() || syms.empty())
       return;
-    for (const auto& sym : syms) {
+    for (const auto& sym : syms)
       PrintSymbol(sym, addr, frame_idx, module_path, offset);
-    }
     printed = true;
     return;
   }
@@ -163,11 +163,7 @@ pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
   int pipe_from_sym[2] = {-1, -1};
   pid_t sym_pid = -1;
 
-  if (pipe(pipe_to_sym) < 0) {
-    goto cleanup;
-  }
-
-  if (pipe(pipe_from_sym) < 0) {
+  if (pipe(pipe_to_sym) < 0 || pipe(pipe_from_sym) < 0) {
     goto cleanup;
   }
 
@@ -197,13 +193,13 @@ pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
   *out_pipe_read = std::exchange(pipe_from_sym[0], -1);
 
 cleanup:
-  if (pipe_to_sym[0] != -1)
+  if (pipe_to_sym[0] >= -1)
     close(pipe_to_sym[0]);
-  if (pipe_to_sym[1] != -1)
+  if (pipe_to_sym[1] >= -1)
     close(pipe_to_sym[1]);
-  if (pipe_from_sym[0] != -1)
+  if (pipe_from_sym[0] >= -1)
     close(pipe_from_sym[0]);
-  if (pipe_from_sym[1] != -1)
+  if (pipe_from_sym[1] >= -1)
     close(pipe_from_sym[1]);
 
   return sym_pid;
@@ -211,7 +207,7 @@ cleanup:
 
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       const std::map<uintptr_t, MapEntry>& maps,
-                                      std::string& out_query) {
+                                      std::string* out_query) {
   std::vector<FrameInfo> frames;
   std::ostringstream oss;
 
@@ -239,7 +235,7 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
   }
 
-  out_query = oss.str();
+  *out_query = oss.str();
   return frames;
 }
 
@@ -321,7 +317,7 @@ void ProcessCrash(const TracePacket& data,
   }
 
   std::string query;
-  std::vector<FrameInfo> frames = PopulateFrames(data, maps, query);
+  std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
 
   FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth);
 

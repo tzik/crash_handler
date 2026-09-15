@@ -1,8 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
-#include <cstddef>
 
 template <typename T, size_t N>
 size_t array_size(T (&)[N]) {

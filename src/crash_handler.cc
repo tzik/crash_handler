@@ -1,4 +1,5 @@
 #include "crash_handler.h"
+
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -9,7 +10,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "absl/debugging/stacktrace.h"
+
+#include <absl/debugging/stacktrace.h>
+
 #include "trace_packet.h"
 #include "util.h"
 
@@ -25,9 +28,8 @@ struct SignalHandlerPair {
   struct sigaction old_handler;
 };
 
-SignalHandlerPair old_handlers[] = {{SIGSEGV, {}}, {SIGILL, {}},  {SIGFPE, {}},
-                                    {SIGABRT, {}}, {SIGTERM, {}}, {SIGBUS, {}},
-                                    {SIGTRAP, {}}};
+SignalHandlerPair old_handlers[] = {{SIGSEGV}, {SIGILL}, {SIGFPE}, {SIGABRT},
+                                    {SIGTERM}, {SIGBUS}, {SIGTRAP}};
 
 void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   TracePacket data;
@@ -68,11 +70,8 @@ bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path) {
   std::vector<char*> argv;
   bool success = false;
 
-  if (pipe2(pipe_to_worker, O_CLOEXEC) < 0) {
-    goto cleanup;
-  }
-
-  if (pipe2(pipe_from_worker, O_CLOEXEC) < 0) {
+  if (pipe2(pipe_to_worker, O_CLOEXEC) < 0 ||
+      pipe2(pipe_from_worker, O_CLOEXEC) < 0) {
     goto cleanup;
   }
 
@@ -105,13 +104,13 @@ bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path) {
   success = true;
 
 cleanup:
-  if (pipe_to_worker[0] != -1)
+  if (pipe_to_worker[0] >= 0)
     close(pipe_to_worker[0]);
-  if (pipe_to_worker[1] != -1)
+  if (pipe_to_worker[1] >= 0)
     close(pipe_to_worker[1]);
-  if (pipe_from_worker[0] != -1)
+  if (pipe_from_worker[0] >= 0)
     close(pipe_from_worker[0]);
-  if (pipe_from_worker[1] != -1)
+  if (pipe_from_worker[1] >= 0)
     close(pipe_from_worker[1]);
 
   return success;
@@ -123,16 +122,14 @@ void InstallSignalHandlers() {
   sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
   sigemptyset(&sa.sa_mask);
 
-  for (auto& pair : old_handlers) {
+  for (auto& pair : old_handlers)
     sigaction(pair.signo, &sa, &pair.old_handler);
-  }
 }
 
 }  // namespace
 
 void SetUpCrashHandler(const char* worker_path,
                        const char* llvm_symbolizer_path) {
-  if (SpawnWorker(worker_path, llvm_symbolizer_path)) {
+  if (SpawnWorker(worker_path, llvm_symbolizer_path))
     InstallSignalHandlers();
-  }
 }
