@@ -53,7 +53,7 @@ install(EXPORT CrashHandlerTargets
 )
 
 configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/CrashHandlerConfig.cmake.in
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CrashHandlerConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/CrashHandlerConfig.cmake
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/CrashHandler
 )
