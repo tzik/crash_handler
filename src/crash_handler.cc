@@ -64,7 +64,7 @@ void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   raise(signo);
 }
 
-bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path) {
+bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path, const char* strip_path_prefix) {
   int pipe_to_worker[2] = {-1, -1};
   int pipe_from_worker[2] = {-1, -1};
   std::vector<char*> argv;
@@ -87,6 +87,9 @@ bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path) {
     posix_spawn_file_actions_addclose(&actions, pipe_from_worker[0]);
 
     std::vector<std::string> args = {worker_path, llvm_symbolizer_path};
+    if (strip_path_prefix && strip_path_prefix[0] != '\0') {
+      args.push_back(strip_path_prefix);
+    }
     argv = MakeArgV(&args);
 
     if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv.data(),
@@ -129,7 +132,8 @@ void InstallSignalHandlers() {
 }  // namespace
 
 void SetUpCrashHandler(const char* worker_path,
-                       const char* llvm_symbolizer_path) {
-  if (SpawnWorker(worker_path, llvm_symbolizer_path))
+                       const char* llvm_symbolizer_path,
+                       const char* strip_path_prefix) {
+  if (SpawnWorker(worker_path, llvm_symbolizer_path, strip_path_prefix))
     InstallSignalHandlers();
 }

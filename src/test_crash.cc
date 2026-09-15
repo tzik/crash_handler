@@ -24,11 +24,16 @@ __attribute__((noinline)) void intermediate_function() {
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0]
-              << " <worker_path> <llvm_symbolizer_path>\n";
+              << " <worker_path> <llvm_symbolizer_path> [strip_path_prefix]\n";
     return 1;
   }
 
-  SetUpCrashHandler(argv[1], argv[2]);
+  const char* strip_path_prefix = nullptr;
+  if (argc >= 4) {
+    strip_path_prefix = argv[3];
+  }
+
+  SetUpCrashHandler(argv[1], argv[2], strip_path_prefix);
 
   pid_t pid = fork();
   if (pid < 0) {

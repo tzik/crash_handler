@@ -135,14 +135,25 @@ void PrintSymbol(const nlohmann::json& sym,
                  uintptr_t addr,
                  int frame_idx,
                  const std::string& module_path,
-                 uintptr_t offset) {
+                 uintptr_t offset,
+                 const std::string& strip_path_prefix) {
   std::string function = sym.value("FunctionName", "??");
   std::string file = sym.value("FileName", "??");
+  std::string display_module_path = module_path;
+
+  if (!strip_path_prefix.empty()) {
+    if (file.starts_with(strip_path_prefix)) {
+      file = file.substr(strip_path_prefix.length());
+    }
+    if (display_module_path.starts_with(strip_path_prefix)) {
+      display_module_path = display_module_path.substr(strip_path_prefix.length());
+    }
+  }
   int line = sym.value("Line", 0);
   std::string source_loc = std::format("{}:{}", file, line);
 
   std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
-                           addr, function, module_path, offset, source_loc);
+                           addr, function, display_module_path, offset, source_loc);
 }
 
 void PrintFrames(const nlohmann::json& j,
@@ -150,13 +161,14 @@ void PrintFrames(const nlohmann::json& j,
                  int frame_idx,
                  const std::string& module_path,
                  uintptr_t offset,
-                 bool& printed) {
+                 bool& printed,
+                 const std::string& strip_path_prefix) {
   if (j.is_array() && !j.empty()) {
     auto& syms = j[0]["Symbol"];
     if (!syms.is_array() || syms.empty())
       return;
     for (const auto& sym : syms)
-      PrintSymbol(sym, addr, frame_idx, module_path, offset);
+      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
     printed = true;
     return;
   }
@@ -164,7 +176,7 @@ void PrintFrames(const nlohmann::json& j,
   if (j.is_object() && j.contains("Symbol") && j["Symbol"].is_array() &&
       !j["Symbol"].empty()) {
     for (const auto& sym : j["Symbol"]) {
-      PrintSymbol(sym, addr, frame_idx, module_path, offset);
+      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
     }
     printed = true;
     return;
@@ -275,7 +287,8 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
                           FILE* sym_out,
                           FILE* sym_in,
                           const std::string& query,
-                          int stack_depth) {
+                          int stack_depth,
+                          const std::string& strip_path_prefix) {
   int valid_frames_count = 0;
   for (const auto& f : frames) {
     if (f.entry)
@@ -320,7 +333,7 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
     bool printed = false;
     if (json_idx < parsed_jsons.size()) {
       PrintFrames(parsed_jsons[json_idx], frame.addr, i, frame.entry->path,
-                  frame.offset_in_module, printed);
+                  frame.offset_in_module, printed, strip_path_prefix);
       json_idx++;
     }
 
@@ -335,7 +348,8 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
 void ProcessCrash(const TracePacket& data,
                   std::map<uintptr_t, MapEntry>& maps,
                   FILE* sym_out,
-                  FILE* sym_in) {
+                  FILE* sym_in,
+                  const std::string& strip_path_prefix) {
   pid_t parent_pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
                            parent_pid, data.signal_number);
@@ -351,7 +365,7 @@ void ProcessCrash(const TracePacket& data,
   std::string query;
   std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
 
-  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth);
+  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth, strip_path_prefix);
 
   std::cerr << std::flush;
   char ack = 1;
@@ -365,6 +379,14 @@ int main(int argc, char** argv) {
     return 1;
 
   std::string llvm_symbolizer_path = argv[1];
+
+  std::string strip_path_prefix = "";
+  if (argc >= 3) {
+    strip_path_prefix = argv[2];
+    if (!strip_path_prefix.empty() && !strip_path_prefix.ends_with("/")) {
+      strip_path_prefix += "/";
+    }
+  }
 
   int sym_pipe_write = -1;
   int sym_pipe_read = -1;
@@ -392,7 +414,7 @@ int main(int argc, char** argv) {
 
   TracePacket packet;
   while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
-    ProcessCrash(packet, maps, sym_out, sym_in);
+    ProcessCrash(packet, maps, sym_out, sym_in, strip_path_prefix);
   }
 
   fclose(sym_out);
