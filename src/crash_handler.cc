@@ -34,22 +34,27 @@ struct UnwindState {
   void** stack;
   int size;
   int depth;
+  int skip;
 };
 
 _Unwind_Reason_Code UnwindCallback(struct _Unwind_Context* context, void* arg) {
   UnwindState* state = static_cast<UnwindState*>(arg);
+  if (state->skip > 0) {
+    state->skip--;
+    return _URC_NO_REASON;
+  }
   if (state->depth >= state->size) return _URC_END_OF_STACK;
   state->stack[state->depth++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
   return _URC_NO_REASON;
 }
 
-int GetStackTraceUnwind(void** stack, int size) {
-  UnwindState state = {stack, size, 0};
+__attribute__((noinline)) int GetStackTraceUnwind(void** stack, int size) {
+  UnwindState state = {stack, size, 0, 2};
   _Unwind_Backtrace(UnwindCallback, &state);
   return state.depth;
 }
 
-void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
+__attribute__((noinline)) void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   TracePacket data;
   data.process_id = getpid();
   data.signal_number = signo;
