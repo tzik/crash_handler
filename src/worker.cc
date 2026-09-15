@@ -1,3 +1,4 @@
+
 #include <fcntl.h>
 #include <gelf.h>
 #include <spawn.h>
@@ -8,12 +9,14 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+
 #include "trace_packet.h"
 #include "util.h"
 
@@ -24,7 +27,7 @@ namespace {
 struct MapEntry {
   uintptr_t start, end, offset;
   std::string path;
-  uintptr_t load_bias;
+  uintptr_t vaddr_minus_offset;
 };
 
 struct FrameInfo {
@@ -33,7 +36,7 @@ struct FrameInfo {
   uintptr_t offset_in_module;
 };
 
-std::optional<uintptr_t> GetLoadBias(const std::string& path) {
+std::optional<uintptr_t> GetVaddrMinusOffset(const std::string& path, uintptr_t map_offset) {
   if (elf_version(EV_CURRENT) == EV_NONE)
     return std::nullopt;
   int fd = open(path.c_str(), O_RDONLY);
@@ -53,24 +56,29 @@ std::optional<uintptr_t> GetLoadBias(const std::string& path) {
     return std::nullopt;
   }
 
-  uintptr_t min_vaddr = std::numeric_limits<uintptr_t>::max();
+  std::optional<uintptr_t> vaddr_minus_offset;
   for (size_t i = 0; i < phnum; ++i) {
     GElf_Phdr phdr;
-    if (gelf_getphdr(elf, i, &phdr) != &phdr)
+    if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
       continue;
-    if (phdr.p_type != PT_LOAD)
-      continue;
-    if (phdr.p_vaddr < min_vaddr) {
-      min_vaddr = phdr.p_vaddr;
+    }
+
+    uintptr_t align = phdr.p_align > 0 ? phdr.p_align : 4096;
+    uintptr_t page_aligned_offset = phdr.p_offset & ~(align - 1);
+
+    // mapping offset matches if it lies within [page_aligned_offset, page_aligned_offset + p_memsz)
+    uintptr_t end_mem_offset = phdr.p_offset + phdr.p_memsz;
+
+    if (map_offset >= page_aligned_offset && map_offset < end_mem_offset) {
+      vaddr_minus_offset = phdr.p_vaddr - phdr.p_offset;
+      break;
     }
   }
 
   elf_end(elf);
   close(fd);
 
-  if (min_vaddr == std::numeric_limits<uintptr_t>::max())
-    return std::nullopt;
-  return min_vaddr;
+  return vaddr_minus_offset;
 }
 
 std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
@@ -100,16 +108,17 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
     if (dash == std::string::npos)
       continue;
 
-    auto load_bias_opt = GetLoadBias(path);
-    if (!load_bias_opt.has_value())
-      continue;
-
     MapEntry e;
     e.start = std::stoull(addr.substr(0, dash), nullptr, 16);
     e.end = std::stoull(addr.substr(dash + 1), nullptr, 16);
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
-    e.load_bias = load_bias_opt.value();
+
+    auto vaddr_minus_offset_opt = GetVaddrMinusOffset(path, e.offset);
+    if (!vaddr_minus_offset_opt.has_value())
+      continue;
+
+    e.vaddr_minus_offset = vaddr_minus_offset_opt.value();
     entries[e.start] = e;
   }
   return entries;
@@ -139,9 +148,8 @@ void PrintFrames(const nlohmann::json& j,
     auto& syms = j[0]["Symbol"];
     if (!syms.is_array() || syms.empty())
       return;
-    for (const auto& sym : syms) {
+    for (const auto& sym : syms)
       PrintSymbol(sym, addr, frame_idx, module_path, offset);
-    }
     printed = true;
     return;
   }
@@ -163,11 +171,7 @@ pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
   int pipe_from_sym[2] = {-1, -1};
   pid_t sym_pid = -1;
 
-  if (pipe(pipe_to_sym) < 0) {
-    goto cleanup;
-  }
-
-  if (pipe(pipe_from_sym) < 0) {
+  if (pipe(pipe_to_sym) < 0 || pipe(pipe_from_sym) < 0) {
     goto cleanup;
   }
 
@@ -211,7 +215,7 @@ cleanup:
 
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       const std::map<uintptr_t, MapEntry>& maps,
-                                      std::string& out_query) {
+                                      std::string* out_query) {
   std::vector<FrameInfo> frames;
   std::ostringstream oss;
 
@@ -233,13 +237,13 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     }
 
     uintptr_t offset_in_module =
-        addr - entry->start + entry->offset + entry->load_bias;
+        addr - entry->start + entry->offset + entry->vaddr_minus_offset;
 
     frames.push_back({addr, entry, offset_in_module});
     oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
   }
 
-  out_query = oss.str();
+  *out_query = oss.str();
   return frames;
 }
 
@@ -321,7 +325,7 @@ void ProcessCrash(const TracePacket& data,
   }
 
   std::string query;
-  std::vector<FrameInfo> frames = PopulateFrames(data, maps, query);
+  std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
 
   FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth);
 
