@@ -4,7 +4,6 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -37,9 +36,7 @@ struct FrameInfo {
   uintptr_t offset_in_module;
 };
 
-std::optional<uintptr_t> GetBaseAddress(const std::string& path,
-                                        uintptr_t map_start,
-                                        uintptr_t map_offset) {
+std::optional<uintptr_t> GetBaseAddress(const std::string& path, uintptr_t map_start, uintptr_t map_offset) {
   if (elf_version(EV_CURRENT) == EV_NONE)
     return std::nullopt;
   int fd = open(path.c_str(), O_RDONLY);
@@ -73,16 +70,13 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
 
     uintptr_t page_size = sysconf(_SC_PAGESIZE);
     uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-    uintptr_t phdr_end =
-        (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+    uintptr_t phdr_end = (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
     if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
       // map_start corresponds to phdr_offset_aligned mapped to memory
-      // The virtual address of map_start in ELF is phdr.p_vaddr & ~(page_size -
-      // 1) Therefore, vaddr for map_offset = (phdr.p_vaddr & ~(page_size - 1))
-      // + (map_offset - phdr_offset_aligned)
-      uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                (map_offset - phdr_offset_aligned);
+      // The virtual address of map_start in ELF is phdr.p_vaddr & ~(page_size - 1)
+      // Therefore, vaddr for map_offset = (phdr.p_vaddr & ~(page_size - 1)) + (map_offset - phdr_offset_aligned)
+      uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) + (map_offset - phdr_offset_aligned);
       base_address = map_start - vaddr_in_file;
       break;
     }
@@ -152,8 +146,7 @@ void PrintSymbol(const nlohmann::json& sym,
       file = file.substr(strip_path_prefix.length());
     }
     if (display_module_path.starts_with(strip_path_prefix)) {
-      display_module_path =
-          display_module_path.substr(strip_path_prefix.length());
+      display_module_path = display_module_path.substr(strip_path_prefix.length());
     }
   }
   int line = sym.value("Line", 0);
@@ -168,8 +161,7 @@ void PrintSymbol(const nlohmann::json& sym,
   std::string source_loc = std::format("{}:{}", file, line);
 
   std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
-                           addr, function, display_module_path, offset,
-                           source_loc);
+                           addr, function, display_module_path, offset, source_loc);
 }
 
 void PrintFrames(const nlohmann::json& j,
@@ -259,8 +251,7 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     std::cerr << "--- CRASH_HANDLER_DUMP_MAPS ---\n";
     for (const auto& [start, entry] : maps) {
       std::cerr << std::format("{:x}-{:x} offset={:x} base={:x} {}\n",
-                               entry.start, entry.end, entry.offset,
-                               entry.base_address, entry.path);
+                               entry.start, entry.end, entry.offset, entry.base_address, entry.path);
     }
     std::cerr << "-------------------------------\n";
   }
@@ -280,8 +271,7 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     if (!entry) {
       frames.push_back({addr, nullptr, 0});
       if (dump_maps) {
-        std::cerr << std::format(
-            "Frame #{}: addr=0x{:x} (no map entry found)\n", i, addr);
+        std::cerr << std::format("Frame #{}: addr=0x{:x} (no map entry found)\n", i, addr);
       }
       continue;
     }
@@ -289,9 +279,8 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     uintptr_t offset_in_module = addr - entry->base_address;
 
     if (dump_maps) {
-      std::cerr << std::format(
-          "Frame #{}: addr=0x{:x} base=0x{:x} offset=0x{:x} path={}\n", i, addr,
-          entry->base_address, offset_in_module, entry->path);
+      std::cerr << std::format("Frame #{}: addr=0x{:x} base=0x{:x} offset=0x{:x} path={}\n",
+                               i, addr, entry->base_address, offset_in_module, entry->path);
     }
 
     frames.push_back({addr, entry, offset_in_module});
@@ -378,8 +367,7 @@ void ProcessCrash(const TracePacket& data,
   std::string query;
   std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
 
-  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth,
-                       strip_path_prefix);
+  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth, strip_path_prefix);
 
   std::cerr << std::flush;
   char ack = 1;

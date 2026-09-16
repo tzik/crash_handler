@@ -1,19 +1,17 @@
-#include <cstdint>
 #include "crash_handler.h"
-
-#include <stdio.h>
-#include <string.h>
 
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
-
-#include <unwind.h>
-#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
+#include <unwind.h>
+#include <cstdint>
 
 #include "trace_packet.h"
 #include "util.h"
@@ -46,8 +44,7 @@ _Unwind_Reason_Code UnwindCallback(struct _Unwind_Context* context, void* arg) {
     state->skip--;
     return _URC_NO_REASON;
   }
-  if (state->depth >= state->size)
-    return _URC_END_OF_STACK;
+  if (state->depth >= state->size) return _URC_END_OF_STACK;
   uintptr_t ip = _Unwind_GetIP(context);
   if (state->depth)
     ip -= 1;
@@ -61,9 +58,7 @@ __attribute__((noinline)) int GetStackTraceUnwind(void** stack, int size) {
   return state.depth;
 }
 
-__attribute__((noinline)) void CrashSignalHandler(int signo,
-                                                  siginfo_t* info,
-                                                  void* context) {
+__attribute__((noinline)) void CrashSignalHandler(int signo, siginfo_t* info, void* context) {
   TracePacket data;
   data.process_id = getpid();
   data.signal_number = signo;
@@ -95,9 +90,7 @@ __attribute__((noinline)) void CrashSignalHandler(int signo,
   raise(signo);
 }
 
-bool SpawnWorker(const char* worker_path,
-                 const char* llvm_symbolizer_path,
-                 const char* strip_path_prefix) {
+bool SpawnWorker(const char* worker_path, const char* llvm_symbolizer_path, const char* strip_path_prefix) {
   int pipe_to_worker[2] = {-1, -1};
   int pipe_from_worker[2] = {-1, -1};
   std::vector<char*> argv;
