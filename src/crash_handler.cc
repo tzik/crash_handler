@@ -44,12 +44,15 @@ _Unwind_Reason_Code UnwindCallback(struct _Unwind_Context* context, void* arg) {
     return _URC_NO_REASON;
   }
   if (state->depth >= state->size) return _URC_END_OF_STACK;
-  state->stack[state->depth++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
+  uintptr_t ip = _Unwind_GetIP(context);
+  if (state->depth)
+    ip -= 1;
+  state->stack[state->depth++] = reinterpret_cast<void*>(ip);
   return _URC_NO_REASON;
 }
 
 __attribute__((noinline)) int GetStackTraceUnwind(void** stack, int size) {
-  UnwindState state = {stack, size, 0, 2};
+  UnwindState state = {stack, size, 0, 3};
   _Unwind_Backtrace(UnwindCallback, &state);
   return state.depth;
 }

@@ -150,6 +150,14 @@ void PrintSymbol(const nlohmann::json& sym,
     }
   }
   int line = sym.value("Line", 0);
+
+  if (function.empty())
+    function = "??";
+  if (file.empty())
+    file = "??";
+  if (display_module_path.empty())
+    display_module_path = "??";
+
   std::string source_loc = std::format("{}:{}", file, line);
 
   std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
@@ -305,19 +313,18 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
   for (int i = 0; i < valid_frames_count; ++i) {
     char* line_ptr = nullptr;
     size_t len = 0;
-    if (getline(&line_ptr, &len, sym_in) != -1) {
-      std::string line = line_ptr;
+    if (getline(&line_ptr, &len, sym_in) < 0) {
       free(line_ptr);
+      parsed_jsons.push_back(nlohmann::json());
+      continue;
+    }
 
-      try {
-        auto j = nlohmann::json::parse(line);
-        parsed_jsons.push_back(std::move(j));
-      } catch (...) {
-        parsed_jsons.push_back(nlohmann::json());
-      }
-    } else {
-      if (line_ptr)
-        free(line_ptr);
+    std::string line = line_ptr;
+    free(line_ptr);
+
+    try {
+      parsed_jsons.push_back(nlohmann::json::parse(line));
+    } catch (...) {
       parsed_jsons.push_back(nlohmann::json());
     }
   }
@@ -354,13 +361,8 @@ void ProcessCrash(const TracePacket& data,
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
                            parent_pid, data.signal_number);
 
-  if (maps.empty()) {
+  if (maps.empty())
     maps = ReadMaps(parent_pid);
-    if (maps.empty()) {
-      std::cerr << "Maps empty, aborting.\n";
-      _exit(1);
-    }
-  }
 
   std::string query;
   std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
