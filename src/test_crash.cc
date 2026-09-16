@@ -1,8 +1,9 @@
-#include <assert.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #include <cstdlib>
 #include <iostream>
+
 #include "crash_handler.h"
 
 __attribute__((always_inline)) inline void inline_function() {
