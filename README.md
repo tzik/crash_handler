@@ -8,7 +8,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ## External Dependencies
 
 This project relies on the following external libraries and tools:
-- **abseil** (`absl::stacktrace`): Used for capturing raw stack traces.
 - **libelf**: Required for reading ELF files to help with symbolization.
 - **nlohmann_json**: Used for structured communication between the main process and the crash handler worker.
 - **llvm-symbolizer**: External tool invoked by the worker to resolve addresses to source code locations.
@@ -17,7 +16,7 @@ This project relies on the following external libraries and tools:
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
-sudo apt-get install -y libelf-dev nlohmann-json3-dev libabsl-dev pkg-config llvm cmake
+sudo apt-get install -y libelf-dev nlohmann-json3-dev pkg-config llvm cmake
 ```
 
 ## Usage Example
@@ -93,6 +92,8 @@ You can build the project using standard CMake commands.
    make
    ```
    This will build the `crash_handler` library, the `crash_handler_worker` executable, and the `test_crash` test executable.
+
+   *Note: In order for the crash handler to report file names and line numbers in the stack trace, the application must be built with debug information. Make sure to configure CMake with `-DCMAKE_BUILD_TYPE=RelWithDebInfo` (or `Debug`) or compile with the `-g` flag.*
 
 3. **Run the tests:**
    You can run the test executable to verify that the crash handler works correctly. It simulates a crash and outputs the stack trace.
