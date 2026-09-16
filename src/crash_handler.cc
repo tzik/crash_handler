@@ -1,3 +1,4 @@
+#include <cstdint>
 #include "crash_handler.h"
 
 #include <fcntl.h>
