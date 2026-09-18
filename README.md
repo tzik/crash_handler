@@ -51,15 +51,15 @@ int main(int argc, char** argv) {
 When a crash occurs, CrashHandler will output a detailed stack trace similar to the following:
 
 ```
-*** Process 130346 crashed with signal 4 ***
-#0 0x55abb797e5b1 in inline_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:9
-#0 0x55abb797e5b1 in crash_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:13
-#1 0x55abb797e5bf in intermediate_function_2() (/app/build/test_crash + 0x25bf) at /app/src/test_crash.cc:17
-#2 0x55abb797e5cf in intermediate_function() (/app/build/test_crash + 0x25cf) at /app/src/test_crash.cc:21
-#3 0x55abb797e6c2 in main (/app/build/test_crash + 0x26c2) at /app/src/test_crash.cc:45
-#4 0x7f86a80371c9 in __libc_start_call_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ./csu/../sysdeps/nptl/libc_start_call_main.h:58
-#5 0x7f86a803728a in __libc_start_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ./csu/../csu/libc-start.c:360
-#6 0x55abb797e4e4 in _start (/app/build/test_crash + 0x24e4) at ??:0
+*** Process 315720 crashed with signal 4 ***
+#0 0x56233aaa05b1 in inline_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:10
+#0 0x56233aaa05b1 in crash_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:14
+#1 0x56233aaa05bf in intermediate_function_2() (/app/build/test_crash + 0x25bf) at /app/src/test_crash.cc:18
+#2 0x56233aaa05cf in intermediate_function() (/app/build/test_crash + 0x25cf) at /app/src/test_crash.cc:22
+#3 0x56233aaa06b7 in main() (/app/build/test_crash + 0x26b7) at /app/src/test_crash.cc:46
+#4 0x7fd9636ff1c9 in __libc_start_call_main() (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ../sysdeps/nptl/libc_start_call_main.h:58
+#5 0x7fd9636ff28a in __libc_start_main_impl() (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ../csu/libc-start.c:360
+#6 0x56233aaa04e4 in _start() (/app/build/test_crash + 0x24e4) at ??:0
 #7 0xffffffffffffffff (unknown)
 ```
 
