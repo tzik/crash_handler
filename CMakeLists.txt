@@ -15,6 +15,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
 pkg_check_modules(LIBDW REQUIRED IMPORTED_TARGET libdw)
 
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-gdwarf-4)
+endif()
+
 add_library(crash_util OBJECT src/util.cc)
 
 add_library(crash_handler src/crash_handler.cc $<TARGET_OBJECTS:crash_util>)
