@@ -13,8 +13,12 @@ include(CMakePackageConfigHelpers)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
+pkg_check_modules(LIBDW REQUIRED IMPORTED_TARGET libdw)
 
-find_package(nlohmann_json REQUIRED)
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-gdwarf-4)
+endif()
 
 add_library(crash_util OBJECT src/util.cc)
 
@@ -27,7 +31,7 @@ target_include_directories(crash_handler PUBLIC
 
 add_executable(crash_handler_worker src/worker.cc $<TARGET_OBJECTS:crash_util>)
 target_link_libraries(crash_handler_worker PRIVATE
-  nlohmann_json::nlohmann_json PkgConfig::LIBELF)
+  PkgConfig::LIBDW PkgConfig::LIBELF)
 
 add_executable(test_crash src/test_crash.cc)
 target_link_libraries(test_crash PRIVATE crash_handler)

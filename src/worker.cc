@@ -1,4 +1,3 @@
-
 #include <fcntl.h>
 #include <gelf.h>
 #include <spawn.h>
@@ -16,7 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include <cxxabi.h>
+#include <dwarf.h>
+#include <elfutils/libdwfl.h>
 
 #include "trace_packet.h"
 #include "util.h"
@@ -25,126 +26,14 @@ extern char** environ;
 
 namespace {
 
-struct MapEntry {
-  uintptr_t start, end, offset;
-  std::string path;
-  uintptr_t base_address;
-};
-
-struct FrameInfo {
-  uintptr_t addr;
-  const MapEntry* entry;
-  uintptr_t offset_in_module;
-};
-
-std::optional<uintptr_t> GetBaseAddress(const std::string& path,
-                                        uintptr_t map_start,
-                                        uintptr_t map_offset) {
-  if (elf_version(EV_CURRENT) == EV_NONE)
-    return std::nullopt;
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return std::nullopt;
-
-  Elf* elf = elf_begin(fd, ELF_C_READ, nullptr);
-  if (!elf) {
-    close(fd);
-    return std::nullopt;
-  }
-
-  size_t phnum;
-  if (elf_getphdrnum(elf, &phnum) != 0) {
-    elf_end(elf);
-    close(fd);
-    return std::nullopt;
-  }
-
-  std::optional<uintptr_t> base_address;
-
-  for (size_t i = 0; i < phnum; ++i) {
-    GElf_Phdr phdr;
-    if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
-      continue;
-    }
-    // Find the executable PT_LOAD segment that corresponds to the mmap offset
-    if ((phdr.p_flags & PF_X) == 0) {
-      continue;
-    }
-
-    uintptr_t page_size = sysconf(_SC_PAGESIZE);
-    uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-    uintptr_t phdr_end =
-        (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
-
-    if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
-      // map_start corresponds to phdr_offset_aligned mapped to memory
-      // The virtual address of map_start in ELF is phdr.p_vaddr & ~(page_size -
-      // 1) Therefore, vaddr for map_offset = (phdr.p_vaddr & ~(page_size - 1))
-      // + (map_offset - phdr_offset_aligned)
-      uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                (map_offset - phdr_offset_aligned);
-      base_address = map_start - vaddr_in_file;
-      break;
-    }
-  }
-
-  elf_end(elf);
-  close(fd);
-
-  return base_address;
-}
-
-std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
-  std::map<uintptr_t, MapEntry> entries;
-  std::string maps_path = std::format("/proc/{}/maps", pid);
-  std::ifstream maps(maps_path);
-  std::string line;
-
-  while (std::getline(maps, line)) {
-    std::istringstream iss(line);
-    std::string addr, perms, offset, dev, inode, path;
-    iss >> addr >> perms >> offset >> dev >> inode;
-    std::getline(iss, path);
-    size_t first = path.find_first_not_of(" \t");
-
-    if (first == std::string::npos)
-      continue;
-
-    path = path.substr(first);
-
-    if (perms.find('x') == std::string::npos)
-      continue;
-    if (path.empty() || path[0] != '/')
-      continue;
-
-    size_t dash = addr.find('-');
-    if (dash == std::string::npos)
-      continue;
-
-    MapEntry e;
-    e.start = std::stoull(addr.substr(0, dash), nullptr, 16);
-    e.end = std::stoull(addr.substr(dash + 1), nullptr, 16);
-    e.offset = std::stoull(offset, nullptr, 16);
-    e.path = path;
-
-    auto base_addr_opt = GetBaseAddress(path, e.start, e.offset);
-    if (!base_addr_opt.has_value())
-      continue;
-
-    e.base_address = base_addr_opt.value();
-    entries[e.start] = e;
-  }
-  return entries;
-}
-
-void PrintSymbol(const nlohmann::json& sym,
-                 uintptr_t addr,
+void PrintSymbol(uintptr_t addr,
                  int frame_idx,
                  const std::string& module_path,
                  uintptr_t offset,
-                 const std::string& strip_path_prefix) {
-  std::string function = sym.value("FunctionName", "??");
-  std::string file = sym.value("FileName", "??");
+                 const std::string& strip_path_prefix,
+                 std::string function,
+                 std::string file,
+                 int line) {
   std::string display_module_path = module_path;
 
   if (!strip_path_prefix.empty()) {
@@ -156,7 +45,6 @@ void PrintSymbol(const nlohmann::json& sym,
           display_module_path.substr(strip_path_prefix.length());
     }
   }
-  int line = sym.value("Line", 0);
 
   if (function.empty())
     function = "??";
@@ -172,270 +60,220 @@ void PrintSymbol(const nlohmann::json& sym,
                            source_loc);
 }
 
-void PrintFrames(const nlohmann::json& j,
-                 uintptr_t addr,
-                 int frame_idx,
-                 const std::string& module_path,
-                 uintptr_t offset,
-                 bool& printed,
-                 const std::string& strip_path_prefix) {
-  if (j.is_array() && !j.empty()) {
-    auto& syms = j[0]["Symbol"];
-    if (!syms.is_array() || syms.empty())
-      return;
-    for (const auto& sym : syms)
-      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
-    printed = true;
+std::string FormatFuncName(const char* func_name) {
+  std::string demangled = func_name ? func_name : "??";
+  if (func_name) {
+    int status;
+    char* demangled_name = abi::__cxa_demangle(func_name, nullptr, nullptr, &status);
+    if (status == 0 && demangled_name) {
+      demangled = demangled_name;
+      free(demangled_name);
+    }
+  }
+
+  size_t paren = demangled.find('(');
+  if (paren != std::string::npos) {
+    demangled = demangled.substr(0, paren) + "()";
+  } else if (demangled != "??") {
+    demangled += "()";
+  }
+  return demangled;
+}
+
+void FetchAndPrintSymbols(const TracePacket& data,
+                          const std::string& strip_path_prefix) {
+  static char* debuginfo_path = nullptr;
+  static const Dwfl_Callbacks callbacks = {
+      .find_elf = dwfl_linux_proc_find_elf,
+      .find_debuginfo = dwfl_standard_find_debuginfo,
+      .section_address = dwfl_offline_section_address,
+      .debuginfo_path = &debuginfo_path,
+  };
+
+  Dwfl* dwfl = dwfl_begin(&callbacks);
+  if (!dwfl) {
+    for (int i = 0; i < data.stack_depth; ++i) {
+      uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
+      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
+    }
     return;
   }
 
-  if (j.is_object() && j.contains("Symbol") && j["Symbol"].is_array() &&
-      !j["Symbol"].empty()) {
-    for (const auto& sym : j["Symbol"]) {
-      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
+  int report_err = dwfl_linux_proc_report(dwfl, data.process_id);
+  if (report_err != 0) {
+    std::cerr << "dwfl_linux_proc_report failed: " << (dwfl_errmsg(-1) ? dwfl_errmsg(-1) : "unknown error") << "\n";
+    for (int i = 0; i < data.stack_depth; ++i) {
+      uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
+      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
     }
-    printed = true;
+    dwfl_end(dwfl);
     return;
   }
-}
-
-pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
-                      int* out_pipe_write,
-                      int* out_pipe_read) {
-  int pipe_to_sym[2] = {-1, -1};
-  int pipe_from_sym[2] = {-1, -1};
-  pid_t sym_pid = -1;
-
-  if (pipe(pipe_to_sym) < 0 || pipe(pipe_from_sym) < 0) {
-    goto cleanup;
-  }
-
-  {
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-
-    posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
-
-    posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
-    posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
-
-    std::vector<std::string> args = {llvm_symbolizer_path,
-                                     "--output-style=JSON"};
-    std::vector<char*> child_argv = MakeArgV(&args);
-
-    if (posix_spawn(&sym_pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
-                    child_argv.data(), environ) < 0) {
-      posix_spawn_file_actions_destroy(&actions);
-      goto cleanup;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-  }
-
-  *out_pipe_write = std::exchange(pipe_to_sym[1], -1);
-  *out_pipe_read = std::exchange(pipe_from_sym[0], -1);
-
-cleanup:
-  if (pipe_to_sym[0] >= -1)
-    close(pipe_to_sym[0]);
-  if (pipe_to_sym[1] >= -1)
-    close(pipe_to_sym[1]);
-  if (pipe_from_sym[0] >= -1)
-    close(pipe_from_sym[0]);
-  if (pipe_from_sym[1] >= -1)
-    close(pipe_from_sym[1]);
-
-  return sym_pid;
-}
-
-std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
-                                      const std::map<uintptr_t, MapEntry>& maps,
-                                      std::string* out_query) {
-  std::vector<FrameInfo> frames;
-  std::ostringstream oss;
-  bool dump_maps = getenv("CRASH_HANDLER_DUMP_MAPS") != nullptr;
-
-  if (dump_maps) {
-    std::cerr << "--- CRASH_HANDLER_DUMP_MAPS ---\n";
-    for (const auto& [start, entry] : maps) {
-      std::cerr << std::format("{:x}-{:x} offset={:x} base={:x} {}\n",
-                               entry.start, entry.end, entry.offset,
-                               entry.base_address, entry.path);
-    }
-    std::cerr << "-------------------------------\n";
-  }
+  dwfl_report_end(dwfl, nullptr, nullptr);
 
   for (int i = 0; i < data.stack_depth; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
+    Dwfl_Module* mod = dwfl_addrmodule(dwfl, addr);
 
-    const MapEntry* entry = nullptr;
-    auto it = maps.upper_bound(addr);
-    if (it != maps.begin()) {
-      --it;
-      if (addr >= it->second.start && addr < it->second.end) {
-        entry = &it->second;
-      }
-    }
-
-    if (!entry) {
-      frames.push_back({addr, nullptr, 0});
-      if (dump_maps) {
-        std::cerr << std::format(
-            "Frame #{}: addr=0x{:x} (no map entry found)\n", i, addr);
-      }
+    if (!mod) {
+      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
       continue;
     }
 
-    uintptr_t offset_in_module = addr - entry->base_address;
-
-    if (dump_maps) {
-      std::cerr << std::format(
-          "Frame #{}: addr=0x{:x} base=0x{:x} offset=0x{:x} path={}\n", i, addr,
-          entry->base_address, offset_in_module, entry->path);
-    }
-
-    frames.push_back({addr, entry, offset_in_module});
-    oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
-  }
-
-  *out_query = oss.str();
-  return frames;
-}
-
-void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
-                          FILE* sym_out,
-                          FILE* sym_in,
-                          const std::string& query,
-                          int stack_depth,
-                          const std::string& strip_path_prefix) {
-  int valid_frames_count = 0;
-  for (const auto& f : frames) {
-    if (f.entry)
-      valid_frames_count++;
-  }
-
-  if (valid_frames_count > 0) {
-    fwrite(query.c_str(), 1, query.size(), sym_out);
-    fflush(sym_out);
-  }
-
-  std::vector<nlohmann::json> parsed_jsons;
-
-  for (int i = 0; i < valid_frames_count; ++i) {
-    char* line_ptr = nullptr;
-    size_t len = 0;
-    if (getline(&line_ptr, &len, sym_in) < 0) {
-      free(line_ptr);
-      parsed_jsons.push_back(nlohmann::json());
-      continue;
-    }
-
-    std::string line = line_ptr;
-    free(line_ptr);
-
-    try {
-      parsed_jsons.push_back(nlohmann::json::parse(line));
-    } catch (...) {
-      parsed_jsons.push_back(nlohmann::json());
-    }
-  }
-
-  int json_idx = 0;
-  for (int i = 0; i < stack_depth; ++i) {
-    const auto& frame = frames[i];
-    if (!frame.entry) {
-      std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, frame.addr);
-      continue;
-    }
 
     bool printed = false;
-    if (json_idx < parsed_jsons.size()) {
-      PrintFrames(parsed_jsons[json_idx], frame.addr, i, frame.entry->path,
-                  frame.offset_in_module, printed, strip_path_prefix);
-      json_idx++;
+
+    Dwarf_Addr mod_start, mod_end;
+    const char* mod_name = dwfl_module_info(mod, nullptr, &mod_start, &mod_end, nullptr, nullptr, nullptr, nullptr);
+    const char* mod_file = dwfl_module_info(mod, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+    // Some logic to get the correct path
+    std::string path = mod_file ? mod_file : (mod_name ? mod_name : "??");
+    uintptr_t offset_in_module = addr - mod_start;
+
+    Dwarf_Addr bias;
+    Dwarf_Die* cu = dwfl_module_addrdie(mod, addr, &bias);
+
+    std::vector<std::pair<std::string, std::pair<std::string, int>>> stack;
+
+    Dwfl_Line* line = dwfl_module_getsrc(mod, addr);
+    std::string innermost_file = "??";
+    int innermost_line = 0;
+    if (line) {
+      Dwarf_Addr addr2;
+      int lineno, colno;
+      const char* file = dwfl_lineinfo(line, &addr2, &lineno, &colno, nullptr, nullptr);
+      if (file) {
+        innermost_file = file;
+        innermost_line = lineno;
+      }
+    }
+
+
+    if (innermost_line == 0 && cu) {
+      Dwarf_Die* scopes;
+      if (dwarf_getscopes(cu, addr - bias, &scopes) > 0) {
+        Dwarf_Die* scope = &scopes[0];
+        Dwarf_Attribute attr;
+        Dwarf_Word decl_file_idx = 0, decl_line = 0;
+        if (dwarf_attr(scope, DW_AT_decl_file, &attr)) {
+          dwarf_formudata(&attr, &decl_file_idx);
+          Dwarf_Files* files;
+          size_t nfiles;
+          if (dwarf_getsrcfiles(cu, &files, &nfiles) == 0) {
+            const char* decl_file = dwarf_filesrc(files, decl_file_idx, nullptr, nullptr);
+            if (decl_file) {
+              innermost_file = decl_file;
+            }
+          }
+        }
+        if (dwarf_attr(scope, DW_AT_decl_line, &attr)) {
+          dwarf_formudata(&attr, &decl_line);
+          innermost_line = decl_line;
+        }
+        free(scopes);
+      }
+    }
+
+    std::string current_file = innermost_file;
+
+    int current_line = innermost_line;
+    bool has_subprogram = false;
+
+    if (cu) {
+      Dwarf_Die* scopes;
+      int n = dwarf_getscopes(cu, addr - bias, &scopes);
+      if (n > 0) {
+        for (int j = 0; j < n; ++j) {
+          Dwarf_Die* scope = &scopes[j];
+          int tag = dwarf_tag(scope);
+          if (tag == DW_TAG_inlined_subroutine || tag == DW_TAG_subprogram) {
+            if (tag == DW_TAG_subprogram) has_subprogram = true;
+
+            const char* func_name = dwarf_diename(scope);
+            if (!func_name) {
+              Dwarf_Attribute attr;
+              if (dwarf_attr(scope, DW_AT_linkage_name, &attr) || dwarf_attr(scope, DW_AT_MIPS_linkage_name, &attr)) {
+                func_name = dwarf_formstring(&attr);
+              }
+            }
+
+            stack.push_back({FormatFuncName(func_name), {current_file, current_line}});
+
+            if (tag == DW_TAG_inlined_subroutine) {
+              Dwarf_Attribute attr;
+              Dwarf_Word call_file_idx = 0, call_line = 0;
+              Dwarf_Files* files;
+              size_t nfiles;
+              dwarf_getsrcfiles(cu, &files, &nfiles);
+
+              if (dwarf_attr(scope, DW_AT_call_file, &attr)) {
+                dwarf_formudata(&attr, &call_file_idx);
+                const char* c_file = dwarf_filesrc(files, call_file_idx, nullptr, nullptr);
+                if (c_file) current_file = c_file;
+              }
+              if (dwarf_attr(scope, DW_AT_call_line, &attr)) {
+                dwarf_formudata(&attr, &call_line);
+                current_line = call_line;
+              }
+            }
+          }
+        }
+        free(scopes);
+      }
+    }
+
+    if (!has_subprogram) {
+      const char* func = dwfl_module_addrname(mod, addr);
+      stack.push_back({FormatFuncName(func), {current_file, current_line}});
+    }
+
+    if (!stack.empty()) {
+      for (const auto& item : stack) {
+        PrintSymbol(addr, i, path, offset_in_module,
+                    strip_path_prefix, item.first, item.second.first,
+                    item.second.second);
+      }
+      printed = true;
     }
 
     if (!printed) {
-      std::cerr << std::format("#{} 0x{:x} in ?? ({} + 0x{:x}) at ??:0\n", i,
-                               frame.addr, frame.entry->path,
-                               frame.offset_in_module);
+      PrintSymbol(addr, i, path, offset_in_module,
+                  strip_path_prefix, "??", "??", 0);
     }
   }
+
+  dwfl_end(dwfl);
 }
 
 void ProcessCrash(const TracePacket& data,
-                  std::map<uintptr_t, MapEntry>& maps,
-                  FILE* sym_out,
-                  FILE* sym_in,
                   const std::string& strip_path_prefix) {
   pid_t parent_pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
                            parent_pid, data.signal_number);
 
-  if (maps.empty())
-    maps = ReadMaps(parent_pid);
-
-  std::string query;
-  std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
-
-  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth,
-                       strip_path_prefix);
+  FetchAndPrintSymbols(data, strip_path_prefix);
 
   std::cerr << std::flush;
   char ack = 1;
-  write(STDOUT_FILENO, &ack, 1);
+  if (write(STDOUT_FILENO, &ack, 1) < 0) {}
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2)
-    return 1;
-
-  std::string llvm_symbolizer_path = argv[1];
-
   std::string strip_path_prefix = "";
-  if (argc >= 3) {
-    strip_path_prefix = argv[2];
+  if (argc >= 2) {
+    strip_path_prefix = argv[1];
     if (!strip_path_prefix.empty() && !strip_path_prefix.ends_with("/")) {
       strip_path_prefix += "/";
     }
   }
 
-  int sym_pipe_write = -1;
-  int sym_pipe_read = -1;
-  pid_t sym_pid =
-      SpawnSymbolizer(llvm_symbolizer_path, &sym_pipe_write, &sym_pipe_read);
-
-  if (sym_pid < 0)
-    return 1;
-
-  FILE* sym_out = fdopen(sym_pipe_write, "w");
-  if (!sym_out) {
-    close(sym_pipe_write);
-    close(sym_pipe_read);
-    return 1;
-  }
-
-  FILE* sym_in = fdopen(sym_pipe_read, "r");
-  if (!sym_in) {
-    fclose(sym_out);
-    close(sym_pipe_read);
-    return 1;
-  }
-
-  std::map<uintptr_t, MapEntry> maps;
-
   TracePacket packet;
   while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
-    ProcessCrash(packet, maps, sym_out, sym_in, strip_path_prefix);
+    ProcessCrash(packet, strip_path_prefix);
   }
-
-  fclose(sym_out);
-  fclose(sym_in);
-
-  int status;
-  waitpid(sym_pid, &status, 0);
 
   return 0;
 }

@@ -9,14 +9,13 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 This project relies on the following external libraries and tools:
 - **libelf**: Required for reading ELF files to help with symbolization.
-- **nlohmann_json**: Used for structured communication between the main process and the crash handler worker.
-- **llvm-symbolizer**: External tool invoked by the worker to resolve addresses to source code locations.
+- **libdw**: Used by the worker to resolve addresses to source code locations directly from DWARF debug information.
 
 ### Installing Dependencies on Debian/Ubuntu
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
-sudo apt-get install -y libelf-dev nlohmann-json3-dev pkg-config llvm cmake
+sudo apt-get install -y libelf-dev libdw-dev pkg-config cmake
 ```
 
 ## Usage Example
@@ -28,19 +27,18 @@ To use CrashHandler in your application, include the header and call `SetUpCrash
 #include <iostream>
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <worker_path> <llvm_symbolizer_path> [strip_path_prefix]\n";
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <worker_path> [strip_path_prefix]\n";
         return 1;
     }
 
     const char* worker_path = argv[1];           // Path to the crash_handler_worker executable
-    const char* llvm_symbolizer_path = argv[2];  // Path to the llvm-symbolizer executable
 
     // Optional: strip a specific prefix from source file paths in the stack trace
-    const char* strip_path_prefix = (argc >= 4) ? argv[3] : nullptr;
+    const char* strip_path_prefix = (argc >= 3) ? argv[2] : nullptr;
 
     // Initialize the crash handler
-    SetUpCrashHandler(worker_path, llvm_symbolizer_path, strip_path_prefix);
+    SetUpCrashHandler(worker_path, strip_path_prefix);
 
     // ... your application logic ...
 
@@ -53,15 +51,15 @@ int main(int argc, char** argv) {
 When a crash occurs, CrashHandler will output a detailed stack trace similar to the following:
 
 ```
-*** Process 130346 crashed with signal 4 ***
-#0 0x55abb797e5b1 in inline_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:9
-#0 0x55abb797e5b1 in crash_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:13
-#1 0x55abb797e5bf in intermediate_function_2() (/app/build/test_crash + 0x25bf) at /app/src/test_crash.cc:17
-#2 0x55abb797e5cf in intermediate_function() (/app/build/test_crash + 0x25cf) at /app/src/test_crash.cc:21
-#3 0x55abb797e6c2 in main (/app/build/test_crash + 0x26c2) at /app/src/test_crash.cc:45
-#4 0x7f86a80371c9 in __libc_start_call_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ./csu/../sysdeps/nptl/libc_start_call_main.h:58
-#5 0x7f86a803728a in __libc_start_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ./csu/../csu/libc-start.c:360
-#6 0x55abb797e4e4 in _start (/app/build/test_crash + 0x24e4) at ??:0
+*** Process 315720 crashed with signal 4 ***
+#0 0x56233aaa05b1 in inline_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:10
+#0 0x56233aaa05b1 in crash_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:14
+#1 0x56233aaa05bf in intermediate_function_2() (/app/build/test_crash + 0x25bf) at /app/src/test_crash.cc:18
+#2 0x56233aaa05cf in intermediate_function() (/app/build/test_crash + 0x25cf) at /app/src/test_crash.cc:22
+#3 0x56233aaa06b7 in main() (/app/build/test_crash + 0x26b7) at /app/src/test_crash.cc:46
+#4 0x7fd9636ff1c9 in __libc_start_call_main() (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ../sysdeps/nptl/libc_start_call_main.h:58
+#5 0x7fd9636ff28a in __libc_start_main_impl() (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ../csu/libc-start.c:360
+#6 0x56233aaa04e4 in _start() (/app/build/test_crash + 0x24e4) at ??:0
 #7 0xffffffffffffffff (unknown)
 ```
 
@@ -100,6 +98,6 @@ You can build the project using standard CMake commands.
    You can run the test executable to verify that the crash handler works correctly. It simulates a crash and outputs the stack trace.
    ```bash
    # Make sure you are in the build directory
-   ./test_crash ./crash_handler_worker "$(which llvm-symbolizer)"
+   ./test_crash ./crash_handler_worker
    ```
-   *Note: If you want to test the `strip_path_prefix` feature, you can append a prefix string as a third argument to `test_crash`.*
+   *Note: If you want to test the `strip_path_prefix` feature, you can append a prefix string as a second argument to `test_crash`.*
