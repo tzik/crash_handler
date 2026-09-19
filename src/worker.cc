@@ -120,6 +120,7 @@ void FetchAndPrintSymbols(const TracePacket& data,
       continue;
     }
 
+
     bool printed = false;
 
     Dwarf_Addr mod_start, mod_end;
@@ -148,7 +149,34 @@ void FetchAndPrintSymbols(const TracePacket& data,
       }
     }
 
+
+    if (innermost_line == 0 && cu) {
+      Dwarf_Die* scopes;
+      if (dwarf_getscopes(cu, addr - bias, &scopes) > 0) {
+        Dwarf_Die* scope = &scopes[0];
+        Dwarf_Attribute attr;
+        Dwarf_Word decl_file_idx = 0, decl_line = 0;
+        if (dwarf_attr(scope, DW_AT_decl_file, &attr)) {
+          dwarf_formudata(&attr, &decl_file_idx);
+          Dwarf_Files* files;
+          size_t nfiles;
+          if (dwarf_getsrcfiles(cu, &files, &nfiles) == 0) {
+            const char* decl_file = dwarf_filesrc(files, decl_file_idx, nullptr, nullptr);
+            if (decl_file) {
+              innermost_file = decl_file;
+            }
+          }
+        }
+        if (dwarf_attr(scope, DW_AT_decl_line, &attr)) {
+          dwarf_formudata(&attr, &decl_line);
+          innermost_line = decl_line;
+        }
+        free(scopes);
+      }
+    }
+
     std::string current_file = innermost_file;
+
     int current_line = innermost_line;
     bool has_subprogram = false;
 
