@@ -101,6 +101,7 @@ void FetchAndPrintSymbols(const TracePacket& data,
 
   int report_err = dwfl_linux_proc_report(dwfl, data.process_id);
   if (report_err != 0) {
+    std::cerr << "dwfl_linux_proc_report failed: " << (dwfl_errmsg(-1) ? dwfl_errmsg(-1) : "unknown error") << "\n";
     for (int i = 0; i < data.stack_depth; ++i) {
       uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
       std::cerr << std::format("#{} 0x{:x} (unknown)\n", i, addr);
