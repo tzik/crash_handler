@@ -94,8 +94,7 @@ __attribute__((noinline)) void CrashSignalHandler(int signo,
   raise(signo);
 }
 
-bool SpawnWorker(const char* worker_path,
-                 const char* strip_path_prefix) {
+bool SpawnWorker(const char* worker_path, const char* strip_path_prefix) {
   int pipe_to_worker[2] = {-1, -1};
   int pipe_from_worker[2] = {-1, -1};
   std::vector<char*> argv;
@@ -162,8 +161,7 @@ void InstallSignalHandlers() {
 
 }  // namespace
 
-void SetUpCrashHandler(const char* worker_path,
-                       const char* strip_path_prefix) {
+void SetUpCrashHandler(const char* worker_path, const char* strip_path_prefix) {
   if (SpawnWorker(worker_path, strip_path_prefix))
     InstallSignalHandlers();
 }

@@ -24,8 +24,7 @@ __attribute__((noinline)) void intermediate_function() {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr << "Usage: " << argv[0]
-              << " <worker_path> [strip_path_prefix]\n";
+    std::cerr << "Usage: " << argv[0] << " <worker_path> [strip_path_prefix]\n";
     return 1;
   }
 

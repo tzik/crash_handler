@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -42,7 +43,8 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
   if (!error_or_mem_buf)
     return std::nullopt;
 
-  auto exp_binary = llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
+  auto exp_binary =
+      llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
   if (!exp_binary) {
     llvm::consumeError(exp_binary.takeError());
     return std::nullopt;
@@ -58,7 +60,8 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
 
   auto process_headers = [&](const auto& headers) {
     for (const auto& phdr : headers) {
-      if (phdr.p_type != llvm::ELF::PT_LOAD || (phdr.p_flags & llvm::ELF::PF_X) == 0)
+      if (phdr.p_type != llvm::ELF::PT_LOAD ||
+          (phdr.p_flags & llvm::ELF::PF_X) == 0)
         continue;
 
       uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
@@ -74,14 +77,16 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
     }
   };
 
-  if (auto* elf_32_le = llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
+  if (auto* elf_32_le =
+          llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
     auto headers = elf_32_le->getELFFile().program_headers();
     if (headers) {
       process_headers(*headers);
     } else {
       llvm::consumeError(headers.takeError());
     }
-  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(elf_obj_base)) {
+  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(
+                 elf_obj_base)) {
     auto headers = elf_64_le->getELFFile().program_headers();
     if (headers) {
       process_headers(*headers);
@@ -192,7 +197,8 @@ void PrintSymbol(const llvm::DILineInfo& sym,
                  const std::string& module_path,
                  uintptr_t offset,
                  const std::string& strip_path_prefix) {
-  std::string function = sym.FunctionName == "<invalid>" ? "??" : sym.FunctionName;
+  std::string function =
+      sym.FunctionName == "<invalid>" ? "??" : sym.FunctionName;
   std::string file = sym.FileName == "<invalid>" ? "??" : sym.FileName;
   std::string display_module_path = module_path;
 
@@ -226,7 +232,8 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
     }
 
     auto res_or_err = symbolizer.symbolizeInlinedCode(
-        frame.entry->path, {frame.offset_in_module, llvm::object::SectionedAddress::UndefSection});
+        frame.entry->path,
+        {frame.offset_in_module, llvm::object::SectionedAddress::UndefSection});
 
     bool printed = false;
     if (res_or_err) {
@@ -257,8 +264,8 @@ void ProcessTracePacket(llvm::symbolize::LLVMSymbolizer& symbolizer,
                         ProcessMaps& process_maps,
                         const std::string& strip_path_prefix) {
   pid_t pid = data.process_id;
-  std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
-                           pid, data.signal_number);
+  std::cerr << std::format("\n*** Process {} crashed with signal SIG{} ***\n",
+                           pid, sigabbrev_np(data.signal_number));
 
   if (!process_maps.contains(pid))
     process_maps[pid] = ReadMaps(pid);
