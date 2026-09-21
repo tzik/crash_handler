@@ -1,5 +1,3 @@
 deps:
   - llvm
   - mold
-  - abseil
-  - nlohmann_json

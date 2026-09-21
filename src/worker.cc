@@ -101,7 +101,7 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
     std::string addr, perms, offset, dev, inode, path;
     iss >> addr >> perms >> offset >> dev >> inode;
     std::getline(iss, path);
-    size_t first = path.find_first_not_of(" 	");
+    size_t first = path.find_first_not_of(" \t");
 
     if (first == std::string::npos)
       continue;
