@@ -11,10 +11,12 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
+find_package(LLVM REQUIRED CONFIG)
+message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-find_package(nlohmann_json REQUIRED)
+include_directories(${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
 
 add_library(crash_util OBJECT src/util.cc)
 
@@ -25,9 +27,11 @@ target_include_directories(crash_handler PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
+llvm_map_components_to_libnames(llvm_libs Symbolize Object Support)
+
 add_executable(crash_handler_worker src/worker.cc $<TARGET_OBJECTS:crash_util>)
 target_link_libraries(crash_handler_worker PRIVATE
-  nlohmann_json::nlohmann_json PkgConfig::LIBELF)
+  ${llvm_libs})
 
 add_executable(test_crash src/test_crash.cc)
 target_link_libraries(test_crash PRIVATE crash_handler)

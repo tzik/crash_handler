@@ -8,15 +8,14 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ## External Dependencies
 
 This project relies on the following external libraries and tools:
-- **libelf**: Required for reading ELF files to help with symbolization.
 - **nlohmann_json**: Used for structured communication between the main process and the crash handler worker.
-- **llvm-symbolizer**: External tool invoked by the worker to resolve addresses to source code locations.
+- **LLVM**: The LLVM C++ libraries are used in-process by the worker to resolve addresses to source code locations.
 
 ### Installing Dependencies on Debian/Ubuntu
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
-sudo apt-get install -y libelf-dev nlohmann-json3-dev pkg-config llvm cmake
+sudo apt-get install -y nlohmann-json3-dev llvm-dev libclang-dev libzstd-dev cmake
 ```
 
 ## Usage Example
@@ -28,19 +27,18 @@ To use CrashHandler in your application, include the header and call `SetUpCrash
 #include <iostream>
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <worker_path> <llvm_symbolizer_path> [strip_path_prefix]\n";
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <worker_path> [strip_path_prefix]\n";
         return 1;
     }
 
     const char* worker_path = argv[1];           // Path to the crash_handler_worker executable
-    const char* llvm_symbolizer_path = argv[2];  // Path to the llvm-symbolizer executable
 
     // Optional: strip a specific prefix from source file paths in the stack trace
-    const char* strip_path_prefix = (argc >= 4) ? argv[3] : nullptr;
+    const char* strip_path_prefix = (argc >= 3) ? argv[2] : nullptr;
 
     // Initialize the crash handler
-    SetUpCrashHandler(worker_path, llvm_symbolizer_path, strip_path_prefix);
+    SetUpCrashHandler(worker_path, strip_path_prefix);
 
     // ... your application logic ...
 
@@ -100,6 +98,6 @@ You can build the project using standard CMake commands.
    You can run the test executable to verify that the crash handler works correctly. It simulates a crash and outputs the stack trace.
    ```bash
    # Make sure you are in the build directory
-   ./test_crash ./crash_handler_worker "$(which llvm-symbolizer)"
+   ./test_crash ./crash_handler_worker
    ```
    *Note: If you want to test the `strip_path_prefix` feature, you can append a prefix string as a third argument to `test_crash`.*
