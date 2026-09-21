@@ -35,35 +35,35 @@ struct FrameInfo {
 std::optional<uintptr_t> GetBaseAddress(const std::string& path,
                                         uintptr_t map_start,
                                         uintptr_t map_offset) {
-  auto ErrorOrMemBuf = llvm::MemoryBuffer::getFile(path);
-  if (!ErrorOrMemBuf)
+  auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
+  if (!error_or_mem_buf)
     return std::nullopt;
 
-  auto ExpBinary = llvm::object::createBinary(ErrorOrMemBuf.get()->getMemBufferRef());
-  if (!ExpBinary) {
-    llvm::consumeError(ExpBinary.takeError());
+  auto exp_binary = llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
+  if (!exp_binary) {
+    llvm::consumeError(exp_binary.takeError());
     return std::nullopt;
   }
 
-  llvm::object::Binary* Bin = ExpBinary.get().get();
-  auto* ELFObjBase = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(Bin);
-  if (!ELFObjBase)
+  llvm::object::Binary* bin = exp_binary.get().get();
+  auto* elf_obj_base = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(bin);
+  if (!elf_obj_base)
     return std::nullopt;
 
   uintptr_t page_size = sysconf(_SC_PAGESIZE);
   std::optional<uintptr_t> base_address;
 
   auto process_headers = [&](const auto& headers) {
-    for (const auto& Phdr : headers) {
-      if (Phdr.p_type != llvm::ELF::PT_LOAD || (Phdr.p_flags & llvm::ELF::PF_X) == 0)
+    for (const auto& phdr : headers) {
+      if (phdr.p_type != llvm::ELF::PT_LOAD || (phdr.p_flags & llvm::ELF::PF_X) == 0)
         continue;
 
-      uintptr_t phdr_offset_aligned = Phdr.p_offset & ~(page_size - 1);
+      uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
       uintptr_t phdr_end =
-          (Phdr.p_offset + Phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+          (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
       if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
-        uintptr_t vaddr_in_file = (Phdr.p_vaddr & ~(page_size - 1)) +
+        uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
                                   (map_offset - phdr_offset_aligned);
         base_address = map_start - vaddr_in_file;
         break;
@@ -71,15 +71,15 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
     }
   };
 
-  if (auto* ELF32LE = llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(ELFObjBase)) {
-    auto headers = ELF32LE->getELFFile().program_headers();
+  if (auto* elf_32_le = llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
+    auto headers = elf_32_le->getELFFile().program_headers();
     if (headers) {
       process_headers(*headers);
     } else {
       llvm::consumeError(headers.takeError());
     }
-  } else if (auto* ELF64LE = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(ELFObjBase)) {
-    auto headers = ELF64LE->getELFFile().program_headers();
+  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(elf_obj_base)) {
+    auto headers = elf_64_le->getELFFile().program_headers();
     if (headers) {
       process_headers(*headers);
     } else {
@@ -222,12 +222,12 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
       continue;
     }
 
-    auto ResOrErr = symbolizer.symbolizeInlinedCode(
+    auto res_or_err = symbolizer.symbolizeInlinedCode(
         frame.entry->path, {frame.offset_in_module, llvm::object::SectionedAddress::UndefSection});
 
     bool printed = false;
-    if (ResOrErr) {
-      const auto& inlining_info = ResOrErr.get();
+    if (res_or_err) {
+      const auto& inlining_info = res_or_err.get();
       int num_frames = inlining_info.getNumberOfFrames();
       if (num_frames > 0) {
         for (int j = 0; j < num_frames; ++j) {
@@ -238,7 +238,7 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
         printed = true;
       }
     } else {
-      llvm::consumeError(ResOrErr.takeError());
+      llvm::consumeError(res_or_err.takeError());
     }
 
     if (!printed) {
