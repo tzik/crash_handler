@@ -1,27 +1,22 @@
-
 #include <fcntl.h>
-#include <gelf.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <format>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include "llvm/DebugInfo/Symbolize/Symbolize.h"
+#include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 #include "trace_packet.h"
 #include "util.h"
-
-extern char** environ;
 
 namespace {
 
@@ -40,56 +35,57 @@ struct FrameInfo {
 std::optional<uintptr_t> GetBaseAddress(const std::string& path,
                                         uintptr_t map_start,
                                         uintptr_t map_offset) {
-  if (elf_version(EV_CURRENT) == EV_NONE)
-    return std::nullopt;
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0)
+  auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
+  if (!error_or_mem_buf)
     return std::nullopt;
 
-  Elf* elf = elf_begin(fd, ELF_C_READ, nullptr);
-  if (!elf) {
-    close(fd);
+  auto exp_binary = llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
+  if (!exp_binary) {
+    llvm::consumeError(exp_binary.takeError());
     return std::nullopt;
   }
 
-  size_t phnum;
-  if (elf_getphdrnum(elf, &phnum) != 0) {
-    elf_end(elf);
-    close(fd);
+  llvm::object::Binary* bin = exp_binary.get().get();
+  auto* elf_obj_base = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(bin);
+  if (!elf_obj_base)
     return std::nullopt;
-  }
 
+  uintptr_t page_size = sysconf(_SC_PAGESIZE);
   std::optional<uintptr_t> base_address;
 
-  for (size_t i = 0; i < phnum; ++i) {
-    GElf_Phdr phdr;
-    if (gelf_getphdr(elf, i, &phdr) != &phdr || phdr.p_type != PT_LOAD) {
-      continue;
-    }
-    // Find the executable PT_LOAD segment that corresponds to the mmap offset
-    if ((phdr.p_flags & PF_X) == 0) {
-      continue;
-    }
+  auto process_headers = [&](const auto& headers) {
+    for (const auto& phdr : headers) {
+      if (phdr.p_type != llvm::ELF::PT_LOAD || (phdr.p_flags & llvm::ELF::PF_X) == 0)
+        continue;
 
-    uintptr_t page_size = sysconf(_SC_PAGESIZE);
-    uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-    uintptr_t phdr_end =
-        (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+      uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
+      uintptr_t phdr_end =
+          (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
-    if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
-      // map_start corresponds to phdr_offset_aligned mapped to memory
-      // The virtual address of map_start in ELF is phdr.p_vaddr & ~(page_size -
-      // 1) Therefore, vaddr for map_offset = (phdr.p_vaddr & ~(page_size - 1))
-      // + (map_offset - phdr_offset_aligned)
-      uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                (map_offset - phdr_offset_aligned);
-      base_address = map_start - vaddr_in_file;
-      break;
+      if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
+        uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
+                                  (map_offset - phdr_offset_aligned);
+        base_address = map_start - vaddr_in_file;
+        break;
+      }
+    }
+  };
+
+  if (auto* elf_32_le = llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
+    auto headers = elf_32_le->getELFFile().program_headers();
+    if (headers) {
+      process_headers(*headers);
+    } else {
+      llvm::consumeError(headers.takeError());
+    }
+  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(elf_obj_base)) {
+    auto headers = elf_64_le->getELFFile().program_headers();
+    if (headers) {
+      process_headers(*headers);
+    } else {
+      llvm::consumeError(headers.takeError());
     }
   }
-
-  elf_end(elf);
-  close(fd);
 
   return base_address;
 }
@@ -137,122 +133,9 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
   return entries;
 }
 
-void PrintSymbol(const nlohmann::json& sym,
-                 uintptr_t addr,
-                 int frame_idx,
-                 const std::string& module_path,
-                 uintptr_t offset,
-                 const std::string& strip_path_prefix) {
-  std::string function = sym.value("FunctionName", "??");
-  std::string file = sym.value("FileName", "??");
-  std::string display_module_path = module_path;
-
-  if (!strip_path_prefix.empty()) {
-    if (file.starts_with(strip_path_prefix)) {
-      file = file.substr(strip_path_prefix.length());
-    }
-    if (display_module_path.starts_with(strip_path_prefix)) {
-      display_module_path =
-          display_module_path.substr(strip_path_prefix.length());
-    }
-  }
-  int line = sym.value("Line", 0);
-
-  if (function.empty())
-    function = "??";
-  if (file.empty())
-    file = "??";
-  if (display_module_path.empty())
-    display_module_path = "??";
-
-  std::string source_loc = std::format("{}:{}", file, line);
-
-  std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
-                           addr, function, display_module_path, offset,
-                           source_loc);
-}
-
-void PrintFrames(const nlohmann::json& j,
-                 uintptr_t addr,
-                 int frame_idx,
-                 const std::string& module_path,
-                 uintptr_t offset,
-                 bool& printed,
-                 const std::string& strip_path_prefix) {
-  if (j.is_array() && !j.empty()) {
-    auto& syms = j[0]["Symbol"];
-    if (!syms.is_array() || syms.empty())
-      return;
-    for (const auto& sym : syms)
-      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
-    printed = true;
-    return;
-  }
-
-  if (j.is_object() && j.contains("Symbol") && j["Symbol"].is_array() &&
-      !j["Symbol"].empty()) {
-    for (const auto& sym : j["Symbol"]) {
-      PrintSymbol(sym, addr, frame_idx, module_path, offset, strip_path_prefix);
-    }
-    printed = true;
-    return;
-  }
-}
-
-pid_t SpawnSymbolizer(const std::string& llvm_symbolizer_path,
-                      int* out_pipe_write,
-                      int* out_pipe_read) {
-  int pipe_to_sym[2] = {-1, -1};
-  int pipe_from_sym[2] = {-1, -1};
-  pid_t sym_pid = -1;
-
-  if (pipe(pipe_to_sym) < 0 || pipe(pipe_from_sym) < 0) {
-    goto cleanup;
-  }
-
-  {
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-
-    posix_spawn_file_actions_adddup2(&actions, pipe_to_sym[0], STDIN_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, pipe_from_sym[1], STDOUT_FILENO);
-
-    posix_spawn_file_actions_addclose(&actions, pipe_to_sym[1]);
-    posix_spawn_file_actions_addclose(&actions, pipe_from_sym[0]);
-
-    std::vector<std::string> args = {llvm_symbolizer_path,
-                                     "--output-style=JSON"};
-    std::vector<char*> child_argv = MakeArgV(&args);
-
-    if (posix_spawn(&sym_pid, llvm_symbolizer_path.c_str(), &actions, nullptr,
-                    child_argv.data(), environ) < 0) {
-      posix_spawn_file_actions_destroy(&actions);
-      goto cleanup;
-    }
-    posix_spawn_file_actions_destroy(&actions);
-  }
-
-  *out_pipe_write = std::exchange(pipe_to_sym[1], -1);
-  *out_pipe_read = std::exchange(pipe_from_sym[0], -1);
-
-cleanup:
-  if (pipe_to_sym[0] >= -1)
-    close(pipe_to_sym[0]);
-  if (pipe_to_sym[1] >= -1)
-    close(pipe_to_sym[1]);
-  if (pipe_from_sym[0] >= -1)
-    close(pipe_from_sym[0]);
-  if (pipe_from_sym[1] >= -1)
-    close(pipe_from_sym[1]);
-
-  return sym_pid;
-}
-
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
-                                      const std::map<uintptr_t, MapEntry>& maps,
-                                      std::string* out_query) {
+                                      const std::map<uintptr_t, MapEntry>& maps) {
   std::vector<FrameInfo> frames;
-  std::ostringstream oss;
   bool dump_maps = getenv("CRASH_HANDLER_DUMP_MAPS") != nullptr;
 
   if (dump_maps) {
@@ -295,52 +178,43 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     }
 
     frames.push_back({addr, entry, offset_in_module});
-    oss << std::format("{} 0x{:x}\n", entry->path, offset_in_module);
   }
 
-  *out_query = oss.str();
   return frames;
 }
 
-void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
-                          FILE* sym_out,
-                          FILE* sym_in,
-                          const std::string& query,
+void PrintSymbol(const llvm::DILineInfo& sym,
+                 uintptr_t addr,
+                 int frame_idx,
+                 const std::string& module_path,
+                 uintptr_t offset,
+                 const std::string& strip_path_prefix) {
+  std::string function = sym.FunctionName == "<invalid>" ? "??" : sym.FunctionName;
+  std::string file = sym.FileName == "<invalid>" ? "??" : sym.FileName;
+  std::string display_module_path = module_path;
+
+  if (!strip_path_prefix.empty()) {
+    if (file.starts_with(strip_path_prefix)) {
+      file = file.substr(strip_path_prefix.length());
+    }
+    if (display_module_path.starts_with(strip_path_prefix)) {
+      display_module_path =
+          display_module_path.substr(strip_path_prefix.length());
+    }
+  }
+  int line = sym.Line;
+
+  std::string source_loc = std::format("{}:{}", file, line);
+
+  std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
+                           addr, function, display_module_path, offset,
+                           source_loc);
+}
+
+void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
+                          const std::vector<FrameInfo>& frames,
                           int stack_depth,
                           const std::string& strip_path_prefix) {
-  int valid_frames_count = 0;
-  for (const auto& f : frames) {
-    if (f.entry)
-      valid_frames_count++;
-  }
-
-  if (valid_frames_count > 0) {
-    fwrite(query.c_str(), 1, query.size(), sym_out);
-    fflush(sym_out);
-  }
-
-  std::vector<nlohmann::json> parsed_jsons;
-
-  for (int i = 0; i < valid_frames_count; ++i) {
-    char* line_ptr = nullptr;
-    size_t len = 0;
-    if (getline(&line_ptr, &len, sym_in) < 0) {
-      free(line_ptr);
-      parsed_jsons.push_back(nlohmann::json());
-      continue;
-    }
-
-    std::string line = line_ptr;
-    free(line_ptr);
-
-    try {
-      parsed_jsons.push_back(nlohmann::json::parse(line));
-    } catch (...) {
-      parsed_jsons.push_back(nlohmann::json());
-    }
-  }
-
-  int json_idx = 0;
   for (int i = 0; i < stack_depth; ++i) {
     const auto& frame = frames[i];
     if (!frame.entry) {
@@ -348,11 +222,23 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
       continue;
     }
 
+    auto res_or_err = symbolizer.symbolizeInlinedCode(
+        frame.entry->path, {frame.offset_in_module, llvm::object::SectionedAddress::UndefSection});
+
     bool printed = false;
-    if (json_idx < parsed_jsons.size()) {
-      PrintFrames(parsed_jsons[json_idx], frame.addr, i, frame.entry->path,
-                  frame.offset_in_module, printed, strip_path_prefix);
-      json_idx++;
+    if (res_or_err) {
+      const auto& inlining_info = res_or_err.get();
+      int num_frames = inlining_info.getNumberOfFrames();
+      if (num_frames > 0) {
+        for (int j = 0; j < num_frames; ++j) {
+          PrintSymbol(inlining_info.getFrame(j), frame.addr, i,
+                      frame.entry->path, frame.offset_in_module,
+                      strip_path_prefix);
+        }
+        printed = true;
+      }
+    } else {
+      llvm::consumeError(res_or_err.takeError());
     }
 
     if (!printed) {
@@ -363,10 +249,9 @@ void FetchAndPrintSymbols(const std::vector<FrameInfo>& frames,
   }
 }
 
-void ProcessCrash(const TracePacket& data,
+void ProcessCrash(llvm::symbolize::LLVMSymbolizer& symbolizer,
+                  const TracePacket& data,
                   std::map<uintptr_t, MapEntry>& maps,
-                  FILE* sym_out,
-                  FILE* sym_in,
                   const std::string& strip_path_prefix) {
   pid_t parent_pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
@@ -375,11 +260,9 @@ void ProcessCrash(const TracePacket& data,
   if (maps.empty())
     maps = ReadMaps(parent_pid);
 
-  std::string query;
-  std::vector<FrameInfo> frames = PopulateFrames(data, maps, &query);
+  std::vector<FrameInfo> frames = PopulateFrames(data, maps);
 
-  FetchAndPrintSymbols(frames, sym_out, sym_in, query, data.stack_depth,
-                       strip_path_prefix);
+  FetchAndPrintSymbols(symbolizer, frames, data.stack_depth, strip_path_prefix);
 
   std::cerr << std::flush;
   char ack = 1;
@@ -389,53 +272,21 @@ void ProcessCrash(const TracePacket& data,
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2)
-    return 1;
-
-  std::string llvm_symbolizer_path = argv[1];
-
   std::string strip_path_prefix = "";
-  if (argc >= 3) {
-    strip_path_prefix = argv[2];
+  if (argc >= 2) {
+    strip_path_prefix = argv[1];
     if (!strip_path_prefix.empty() && !strip_path_prefix.ends_with("/")) {
       strip_path_prefix += "/";
     }
   }
 
-  int sym_pipe_write = -1;
-  int sym_pipe_read = -1;
-  pid_t sym_pid =
-      SpawnSymbolizer(llvm_symbolizer_path, &sym_pipe_write, &sym_pipe_read);
-
-  if (sym_pid < 0)
-    return 1;
-
-  FILE* sym_out = fdopen(sym_pipe_write, "w");
-  if (!sym_out) {
-    close(sym_pipe_write);
-    close(sym_pipe_read);
-    return 1;
-  }
-
-  FILE* sym_in = fdopen(sym_pipe_read, "r");
-  if (!sym_in) {
-    fclose(sym_out);
-    close(sym_pipe_read);
-    return 1;
-  }
-
+  llvm::symbolize::LLVMSymbolizer symbolizer;
   std::map<uintptr_t, MapEntry> maps;
 
   TracePacket packet;
   while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
-    ProcessCrash(packet, maps, sym_out, sym_in, strip_path_prefix);
+    ProcessCrash(symbolizer, packet, maps, strip_path_prefix);
   }
-
-  fclose(sym_out);
-  fclose(sym_in);
-
-  int status;
-  waitpid(sym_pid, &status, 0);
 
   return 0;
 }
