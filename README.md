@@ -14,7 +14,7 @@ This project relies on the following external libraries and tools:
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
-sudo apt-get install -y llvm-dev libclang-dev libzstd-dev cmake
+sudo apt-get install -y llvm-dev libzstd-dev zlib1g-dev cmake
 ```
 
 ## Usage Example
