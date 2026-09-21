@@ -32,6 +32,9 @@ struct FrameInfo {
   uintptr_t offset_in_module;
 };
 
+using Maps = std::map<uintptr_t, MapEntry>;
+using ProcessMaps = std::map<pid_t, Maps>;
+
 std::optional<uintptr_t> GetBaseAddress(const std::string& path,
                                         uintptr_t map_start,
                                         uintptr_t map_offset) {
@@ -90,8 +93,8 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
   return base_address;
 }
 
-std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
-  std::map<uintptr_t, MapEntry> entries;
+Maps ReadMaps(pid_t pid) {
+  Maps entries;
   std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
@@ -134,7 +137,7 @@ std::map<uintptr_t, MapEntry> ReadMaps(pid_t pid) {
 }
 
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
-                                      const std::map<uintptr_t, MapEntry>& maps) {
+                                      const Maps& maps) {
   std::vector<FrameInfo> frames;
   bool dump_maps = getenv("CRASH_HANDLER_DUMP_MAPS") != nullptr;
 
@@ -249,18 +252,18 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
   }
 }
 
-void ProcessCrash(llvm::symbolize::LLVMSymbolizer& symbolizer,
-                  const TracePacket& data,
-                  std::map<uintptr_t, MapEntry>& maps,
-                  const std::string& strip_path_prefix) {
-  pid_t parent_pid = data.process_id;
+void ProcessTracePacket(llvm::symbolize::LLVMSymbolizer& symbolizer,
+                        const TracePacket& data,
+                        ProcessMaps& process_maps,
+                        const std::string& strip_path_prefix) {
+  pid_t pid = data.process_id;
   std::cerr << std::format("\n*** Process {} crashed with signal {} ***\n",
-                           parent_pid, data.signal_number);
+                           pid, data.signal_number);
 
-  if (maps.empty())
-    maps = ReadMaps(parent_pid);
+  if (!process_maps.contains(pid))
+    process_maps[pid] = ReadMaps(pid);
 
-  std::vector<FrameInfo> frames = PopulateFrames(data, maps);
+  std::vector<FrameInfo> frames = PopulateFrames(data, process_maps[pid]);
 
   FetchAndPrintSymbols(symbolizer, frames, data.stack_depth, strip_path_prefix);
 
@@ -281,11 +284,11 @@ int main(int argc, char** argv) {
   }
 
   llvm::symbolize::LLVMSymbolizer symbolizer;
-  std::map<uintptr_t, MapEntry> maps;
+  ProcessMaps process_maps;
 
   TracePacket packet;
   while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
-    ProcessCrash(symbolizer, packet, maps, strip_path_prefix);
+    ProcessTracePacket(symbolizer, packet, process_maps, strip_path_prefix);
   }
 
   return 0;
