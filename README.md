@@ -8,14 +8,13 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 ## External Dependencies
 
 This project relies on the following external libraries and tools:
-- **nlohmann_json**: Used for structured communication between the main process and the crash handler worker.
 - **LLVM**: The LLVM C++ libraries are used in-process by the worker to resolve addresses to source code locations.
 
 ### Installing Dependencies on Debian/Ubuntu
 You can install the required dependencies on a Debian or Ubuntu system using the following command:
 ```bash
 sudo apt-get update
-sudo apt-get install -y nlohmann-json3-dev llvm-dev libclang-dev libzstd-dev cmake
+sudo apt-get install -y llvm-dev libclang-dev libzstd-dev cmake
 ```
 
 ## Usage Example

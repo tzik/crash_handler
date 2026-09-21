@@ -15,9 +15,6 @@ find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-include_directories(${LLVM_INCLUDE_DIRS})
-add_definitions(${LLVM_DEFINITIONS})
-
 add_library(crash_util OBJECT src/util.cc)
 
 add_library(crash_handler src/crash_handler.cc $<TARGET_OBJECTS:crash_util>)
@@ -30,6 +27,8 @@ target_include_directories(crash_handler PUBLIC
 llvm_map_components_to_libnames(llvm_libs Symbolize Object Support)
 
 add_executable(crash_handler_worker src/worker.cc $<TARGET_OBJECTS:crash_util>)
+target_include_directories(crash_handler_worker PRIVATE ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(crash_handler_worker PRIVATE ${LLVM_DEFINITIONS})
 target_link_libraries(crash_handler_worker PRIVATE
   ${llvm_libs})
 
