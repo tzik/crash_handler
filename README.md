@@ -50,16 +50,15 @@ int main(int argc, char** argv) {
 When a crash occurs, CrashHandler will output a detailed stack trace similar to the following:
 
 ```
-*** Process 130346 crashed with signal 4 ***
-#0 0x55abb797e5b1 in inline_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:9
-#0 0x55abb797e5b1 in crash_function() (/app/build/test_crash + 0x25b1) at /app/src/test_crash.cc:13
-#1 0x55abb797e5bf in intermediate_function_2() (/app/build/test_crash + 0x25bf) at /app/src/test_crash.cc:17
-#2 0x55abb797e5cf in intermediate_function() (/app/build/test_crash + 0x25cf) at /app/src/test_crash.cc:21
-#3 0x55abb797e6c2 in main (/app/build/test_crash + 0x26c2) at /app/src/test_crash.cc:45
-#4 0x7f86a80371c9 in __libc_start_call_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ./csu/../sysdeps/nptl/libc_start_call_main.h:58
-#5 0x7f86a803728a in __libc_start_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ./csu/../csu/libc-start.c:360
-#6 0x55abb797e4e4 in _start (/app/build/test_crash + 0x24e4) at ??:0
-#7 0xffffffffffffffff (unknown)
+*** Process 124304 crashed with signal SIGILL ***
+#0 0x64b7f750213a in inline_function() (build/test_crash + 0x213a) at src/test_crash.cc:10
+#0 0x64b7f750213a in crash_function() (build/test_crash + 0x213a) at src/test_crash.cc:14
+#1 0x64b7f7502145 in intermediate_function_2() (build/test_crash + 0x2145) at src/test_crash.cc:18
+#2 0x64b7f750214d in intermediate_function() (build/test_crash + 0x214d) at src/test_crash.cc:22
+#3 0x64b7f75022c7 in main (build/test_crash + 0x22c7) at src/test_crash.cc:0
+#4 0x7600fba2a1c9 in ?? (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a1c9) at ??:0
+#5 0x7600fba2a28a in __libc_start_main (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2a28a) at ??:0
+#6 0x64b7f75020a4 in _start (build/test_crash + 0x20a4) at ??:0
 ```
 
 ## CMake Integration

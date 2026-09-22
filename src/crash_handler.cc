@@ -60,11 +60,11 @@ __attribute__((noinline)) int GetStackTraceUnwind(void** stack, int size) {
 __attribute__((noinline)) void CrashSignalHandler(int signo,
                                                   siginfo_t* info,
                                                   void* context) {
-  TracePacket data;
+  TracePacket data = {};
   data.process_id = getpid();
   data.signal_number = signo;
 
-  data.stack_depth = GetStackTraceUnwind(data.stack, array_size(data.stack));
+  data.stack_depth = GetStackTraceUnwind(data.stack, std::size(data.stack));
 
   WriteFully(worker_stdin_fd, &data, sizeof(data));
 

@@ -139,8 +139,10 @@ Maps ReadMaps(pid_t pid) {
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       const Maps& maps) {
   std::vector<FrameInfo> frames;
+  size_t n = std::min<size_t>(data.stack_depth, std::size(data.stack));
+  frames.reserve(n);
 
-  for (int i = 0; i < data.stack_depth; ++i) {
+  for (int i = 0; i < n; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
 
     const MapEntry* entry = nullptr;
