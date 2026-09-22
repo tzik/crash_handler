@@ -1,7 +1,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include <cstring>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -36,7 +35,7 @@ struct FrameInfo {
 using Maps = std::map<uintptr_t, MapEntry>;
 using ProcessMaps = std::map<pid_t, Maps>;
 
-std::optional<uintptr_t> GetBaseAddress(const std::string& path,
+std::optional<uintptr_t> GetBaseAddress(std::string_view path,
                                         uintptr_t map_start,
                                         uintptr_t map_offset) {
   auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
@@ -58,8 +57,14 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
   uintptr_t page_size = sysconf(_SC_PAGESIZE);
   std::optional<uintptr_t> base_address;
 
-  auto process_headers = [&](const auto& headers) {
-    for (const auto& phdr : headers) {
+  auto process_obj = [&](const auto* obj) {
+    auto headers = obj->getELFFile().program_headers();
+    if (!headers) {
+      llvm::consumeError(headers.takeError());
+      return;
+    }
+
+    for (const auto& phdr : *headers) {
       if (phdr.p_type != llvm::ELF::PT_LOAD ||
           (phdr.p_flags & llvm::ELF::PF_X) == 0)
         continue;
@@ -79,20 +84,10 @@ std::optional<uintptr_t> GetBaseAddress(const std::string& path,
 
   if (auto* elf_32_le =
           llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
-    auto headers = elf_32_le->getELFFile().program_headers();
-    if (headers) {
-      process_headers(*headers);
-    } else {
-      llvm::consumeError(headers.takeError());
-    }
+    process_obj(elf_32_le);
   } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(
                  elf_obj_base)) {
-    auto headers = elf_64_le->getELFFile().program_headers();
-    if (headers) {
-      process_headers(*headers);
-    } else {
-      llvm::consumeError(headers.takeError());
-    }
+    process_obj(elf_64_le);
   }
 
   return base_address;
@@ -144,17 +139,6 @@ Maps ReadMaps(pid_t pid) {
 std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
                                       const Maps& maps) {
   std::vector<FrameInfo> frames;
-  bool dump_maps = getenv("CRASH_HANDLER_DUMP_MAPS") != nullptr;
-
-  if (dump_maps) {
-    std::cerr << "--- CRASH_HANDLER_DUMP_MAPS ---\n";
-    for (const auto& [start, entry] : maps) {
-      std::cerr << std::format("{:x}-{:x} offset={:x} base={:x} {}\n",
-                               entry.start, entry.end, entry.offset,
-                               entry.base_address, entry.path);
-    }
-    std::cerr << "-------------------------------\n";
-  }
 
   for (int i = 0; i < data.stack_depth; ++i) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(data.stack[i]);
@@ -169,23 +153,12 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
     }
 
     if (!entry) {
-      frames.push_back({addr, nullptr, 0});
-      if (dump_maps) {
-        std::cerr << std::format(
-            "Frame #{}: addr=0x{:x} (no map entry found)\n", i, addr);
-      }
+      frames.emplace_back(addr, nullptr, 0);
       continue;
     }
 
     uintptr_t offset_in_module = addr - entry->base_address;
-
-    if (dump_maps) {
-      std::cerr << std::format(
-          "Frame #{}: addr=0x{:x} base=0x{:x} offset=0x{:x} path={}\n", i, addr,
-          entry->base_address, offset_in_module, entry->path);
-    }
-
-    frames.push_back({addr, entry, offset_in_module});
+    frames.emplace_back(addr, entry, offset_in_module);
   }
 
   return frames;
@@ -194,36 +167,34 @@ std::vector<FrameInfo> PopulateFrames(const TracePacket& data,
 void PrintSymbol(const llvm::DILineInfo& sym,
                  uintptr_t addr,
                  int frame_idx,
-                 const std::string& module_path,
+                 std::string_view module_path,
                  uintptr_t offset,
-                 const std::string& strip_path_prefix) {
-  std::string function =
-      sym.FunctionName == "<invalid>" ? "??" : sym.FunctionName;
-  std::string file = sym.FileName == "<invalid>" ? "??" : sym.FileName;
-  std::string display_module_path = module_path;
+                 std::string_view path_prefix) {
+  std::string_view function = sym.FunctionName;
+  if (function == "<invalid>")
+    function = "??";
+  std::string_view file = sym.FileName;
+  if (file == "<invalid>")
+    file = "??";
 
-  if (!strip_path_prefix.empty()) {
-    if (file.starts_with(strip_path_prefix)) {
-      file = file.substr(strip_path_prefix.length());
-    }
-    if (display_module_path.starts_with(strip_path_prefix)) {
-      display_module_path =
-          display_module_path.substr(strip_path_prefix.length());
-    }
+  if (!path_prefix.empty()) {
+    if (file.starts_with(path_prefix))
+      file = file.substr(path_prefix.length());
+    if (module_path.starts_with(path_prefix))
+      module_path = module_path.substr(path_prefix.length());
   }
   int line = sym.Line;
 
   std::string source_loc = std::format("{}:{}", file, line);
 
   std::cerr << std::format("#{} 0x{:x} in {} ({} + 0x{:x}) at {}\n", frame_idx,
-                           addr, function, display_module_path, offset,
-                           source_loc);
+                           addr, function, module_path, offset, source_loc);
 }
 
 void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
                           const std::vector<FrameInfo>& frames,
                           int stack_depth,
-                          const std::string& strip_path_prefix) {
+                          std::string_view path_prefix) {
   for (int i = 0; i < stack_depth; ++i) {
     const auto& frame = frames[i];
     if (!frame.entry) {
@@ -242,8 +213,7 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
       if (num_frames > 0) {
         for (int j = 0; j < num_frames; ++j) {
           PrintSymbol(inlining_info.getFrame(j), frame.addr, i,
-                      frame.entry->path, frame.offset_in_module,
-                      strip_path_prefix);
+                      frame.entry->path, frame.offset_in_module, path_prefix);
         }
         printed = true;
       }
@@ -262,41 +232,43 @@ void FetchAndPrintSymbols(llvm::symbolize::LLVMSymbolizer& symbolizer,
 void ProcessTracePacket(llvm::symbolize::LLVMSymbolizer& symbolizer,
                         const TracePacket& data,
                         ProcessMaps& process_maps,
-                        const std::string& strip_path_prefix) {
+                        std::string_view path_prefix) {
   pid_t pid = data.process_id;
-  std::cerr << std::format("\n*** Process {} crashed with signal SIG{} ***\n",
-                           pid, sigabbrev_np(data.signal_number));
+  std::cerr << "\n*** Process " << pid << " crashed";
+  if (const char* name = sigabbrev_np(data.signal_number))
+    std::cerr << " with signal SIG" << name;
+  std::cerr << " ***\n";
 
-  if (!process_maps.contains(pid))
-    process_maps[pid] = ReadMaps(pid);
+  auto [found, inserted] = process_maps.emplace(pid, Maps{});
+  auto& maps = found->second;
+  if (inserted)
+    maps = ReadMaps(pid);
+  std::vector<FrameInfo> frames = PopulateFrames(data, maps);
 
-  std::vector<FrameInfo> frames = PopulateFrames(data, process_maps[pid]);
-
-  FetchAndPrintSymbols(symbolizer, frames, data.stack_depth, strip_path_prefix);
+  FetchAndPrintSymbols(symbolizer, frames, data.stack_depth, path_prefix);
 
   std::cerr << std::flush;
   char ack = 1;
-  write(STDOUT_FILENO, &ack, 1);
+  if (write(STDOUT_FILENO, &ack, 1) != 1)
+    exit(1);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string strip_path_prefix = "";
+  std::string path_prefix;
   if (argc >= 2) {
-    strip_path_prefix = argv[1];
-    if (!strip_path_prefix.empty() && !strip_path_prefix.ends_with("/")) {
-      strip_path_prefix += "/";
-    }
+    path_prefix = argv[1];
+    if (!path_prefix.empty() && !path_prefix.ends_with("/"))
+      path_prefix += "/";
   }
 
   llvm::symbolize::LLVMSymbolizer symbolizer;
   ProcessMaps process_maps;
 
   TracePacket packet;
-  while (ReadFully(STDIN_FILENO, &packet, sizeof(packet))) {
-    ProcessTracePacket(symbolizer, packet, process_maps, strip_path_prefix);
-  }
+  while (ReadFully(STDIN_FILENO, &packet, sizeof(packet)))
+    ProcessTracePacket(symbolizer, packet, process_maps, path_prefix);
 
   return 0;
 }

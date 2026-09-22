@@ -1,9 +1,6 @@
 #include "crash_handler.h"
 
-#include <stdio.h>
-#include <string.h>
-
-#include <fcntl.h>
+#include <fcntl.h>  // O_CLOEXEC
 #include <signal.h>
 #include <spawn.h>
 #include <unistd.h>
@@ -72,7 +69,7 @@ __attribute__((noinline)) void CrashSignalHandler(int signo,
   WriteFully(worker_stdin_fd, &data, sizeof(data));
 
   char ack = 0;
-  read(worker_stdout_fd, &ack, 1);
+  ReadFully(worker_stdout_fd, &ack, 1);
 
   struct sigaction* old_sa = nullptr;
   for (auto& pair : old_handlers) {
@@ -94,10 +91,9 @@ __attribute__((noinline)) void CrashSignalHandler(int signo,
   raise(signo);
 }
 
-bool SpawnWorker(const char* worker_path, const char* strip_path_prefix) {
+bool SpawnWorker(const char* worker_path, const char* path_prefix) {
   int pipe_to_worker[2] = {-1, -1};
   int pipe_from_worker[2] = {-1, -1};
-  std::vector<char*> argv;
   bool success = false;
 
   if (pipe2(pipe_to_worker, O_CLOEXEC) < 0 ||
@@ -106,6 +102,11 @@ bool SpawnWorker(const char* worker_path, const char* strip_path_prefix) {
   }
 
   {
+    std::vector<std::string> args = {worker_path};
+    if (path_prefix && path_prefix[0] != '\0')
+      args.push_back(path_prefix);
+    std::vector<char*> argv = MakeArgV(&args);
+
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
 
@@ -115,12 +116,6 @@ bool SpawnWorker(const char* worker_path, const char* strip_path_prefix) {
 
     posix_spawn_file_actions_addclose(&actions, pipe_to_worker[1]);
     posix_spawn_file_actions_addclose(&actions, pipe_from_worker[0]);
-
-    std::vector<std::string> args = {worker_path};
-    if (strip_path_prefix && strip_path_prefix[0] != '\0') {
-      args.push_back(strip_path_prefix);
-    }
-    argv = MakeArgV(&args);
 
     if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv.data(),
                     environ) < 0) {
@@ -161,7 +156,7 @@ void InstallSignalHandlers() {
 
 }  // namespace
 
-void SetUpCrashHandler(const char* worker_path, const char* strip_path_prefix) {
-  if (SpawnWorker(worker_path, strip_path_prefix))
+void SetUpCrashHandler(const char* worker_path, const char* path_prefix) {
+  if (SpawnWorker(worker_path, path_prefix))
     InstallSignalHandlers();
 }
