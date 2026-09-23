@@ -1,0 +1,6 @@
+CHECK: *** Process {{[0-9]+}} crashed with signal SIGILL ***
+CHECK: #0 {{0x[0-9a-f]+}} in inline_function() (build/test_crash {{.+}}) at src/test_crash.cc:10
+CHECK: #0 {{0x[0-9a-f]+}} in crash_function() (build/test_crash {{.+}}) at src/test_crash.cc:14
+CHECK: #1 {{0x[0-9a-f]+}} in intermediate_function_2() (build/test_crash {{.+}}) at src/test_crash.cc:18
+CHECK: #2 {{0x[0-9a-f]+}} in intermediate_function() (build/test_crash {{.+}}) at src/test_crash.cc:22
+CHECK: Child crashed with signal 4

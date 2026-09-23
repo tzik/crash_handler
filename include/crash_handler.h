@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 CRASH_HANDLER_EXPORT void SetUpCrashHandler(const char* worker_path,
-                                            const char* strip_path_prefix);
+                                            const char* path_prefix);
 
 #ifdef __cplusplus
 }

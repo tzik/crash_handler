@@ -51,6 +51,11 @@ target_link_libraries(crash_handler_worker PRIVATE
 add_executable(test_crash src/test_crash.cc)
 target_link_libraries(test_crash PRIVATE crash_handler)
 
+include(CTest)
+if(BUILD_TESTING)
+  add_test(NAME crash_test COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/src/test_wrapper.sh $<TARGET_FILE:test_crash> $<TARGET_FILE:crash_handler_worker> ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/test_crash.expected)
+endif()
+
 # Installation
 install(TARGETS crash_handler crash_handler_worker
     EXPORT CrashHandlerTargets

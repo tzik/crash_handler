@@ -27,17 +27,17 @@ To use CrashHandler in your application, include the header and call `SetUpCrash
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <worker_path> [strip_path_prefix]\n";
+        std::cerr << "Usage: " << argv[0] << " <worker_path> [path_prefix]\n";
         return 1;
     }
 
     const char* worker_path = argv[1];           // Path to the crash_handler_worker executable
 
     // Optional: strip a specific prefix from source file paths in the stack trace
-    const char* strip_path_prefix = (argc >= 3) ? argv[2] : nullptr;
+    const char* path_prefix = (argc >= 3) ? argv[2] : nullptr;
 
     // Initialize the crash handler
-    SetUpCrashHandler(worker_path, strip_path_prefix);
+    SetUpCrashHandler(worker_path, path_prefix);
 
     // ... your application logic ...
 
@@ -98,4 +98,4 @@ You can build the project using standard CMake commands.
    # Make sure you are in the build directory
    ./test_crash ./crash_handler_worker
    ```
-   *Note: If you want to test the `strip_path_prefix` feature, you can append a prefix string as a third argument to `test_crash`.*
+   *Note: If you want to test the `path_prefix` feature, you can append a prefix string as a third argument to `test_crash`.*
