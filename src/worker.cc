@@ -4,6 +4,7 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -25,7 +26,7 @@ struct MapEntry {
   uintptr_t end = 0;
   uintptr_t offset = 0;
   std::string path;
-  uintptr_t base_address = 0;
+  uintptr_t base_address = std::numeric_limits<uintptr_t>::max();
 };
 
 struct FrameInfo {
@@ -47,27 +48,25 @@ using ProcessMaps = std::map<pid_t, Maps>;
 using Frames = std::vector<FrameInfo>;
 using Symbols = std::vector<SymbolInfo>;
 
-std::optional<uintptr_t> GetBaseAddress(std::string_view path,
-                                        uintptr_t map_start,
-                                        uintptr_t map_offset) {
+void GetBaseAddress(std::string_view path,
+                    std::vector<MapEntry*>& entries) {
   auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
   if (!error_or_mem_buf)
-    return std::nullopt;
+    return;
 
   auto exp_binary =
       llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
   if (!exp_binary) {
     llvm::consumeError(exp_binary.takeError());
-    return std::nullopt;
+    return;
   }
 
   llvm::object::Binary* bin = exp_binary.get().get();
   auto* elf_obj_base = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(bin);
   if (!elf_obj_base)
-    return std::nullopt;
+    return;
 
   uintptr_t page_size = sysconf(_SC_PAGESIZE);
-  std::optional<uintptr_t> base_address;
 
   auto process_obj = [&](const auto* obj) {
     auto headers = obj->getELFFile().program_headers();
@@ -76,20 +75,22 @@ std::optional<uintptr_t> GetBaseAddress(std::string_view path,
       return;
     }
 
-    for (const auto& phdr : *headers) {
-      if (phdr.p_type != llvm::ELF::PT_LOAD ||
-          (phdr.p_flags & llvm::ELF::PF_X) == 0)
-        continue;
+    for (auto* entry : entries) {
+      for (const auto& phdr : *headers) {
+        if (phdr.p_type != llvm::ELF::PT_LOAD ||
+            (phdr.p_flags & llvm::ELF::PF_X) == 0)
+          continue;
 
-      uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-      uintptr_t phdr_end =
-          (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+        uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
+        uintptr_t phdr_end =
+            (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
-      if (map_offset >= phdr_offset_aligned && map_offset < phdr_end) {
-        uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                  (map_offset - phdr_offset_aligned);
-        base_address = map_start - vaddr_in_file;
-        break;
+        if (entry->offset >= phdr_offset_aligned && entry->offset < phdr_end) {
+          uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
+                                    (entry->offset - phdr_offset_aligned);
+          entry->base_address = entry->start - vaddr_in_file;
+          break;
+        }
       }
     }
   };
@@ -101,8 +102,6 @@ std::optional<uintptr_t> GetBaseAddress(std::string_view path,
                  elf_obj_base)) {
     process_obj(elf_64_le);
   }
-
-  return base_address;
 }
 
 Maps ReadMaps(pid_t pid) {
@@ -111,6 +110,7 @@ Maps ReadMaps(pid_t pid) {
   std::ifstream maps(maps_path);
   std::string line;
 
+  std::vector<MapEntry> temp_entries;
   std::string addr, perms, offset, dev, inode, path;
   while (std::getline(maps, line)) {
     std::istringstream iss(line);
@@ -138,13 +138,24 @@ Maps ReadMaps(pid_t pid) {
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
 
-    auto base_addr_opt = GetBaseAddress(path, e.start, e.offset);
-    if (!base_addr_opt.has_value())
-      continue;
-
-    e.base_address = base_addr_opt.value();
-    entries[e.start] = e;
+    temp_entries.push_back(e);
   }
+
+  std::map<std::string, std::vector<MapEntry*>> queries_by_path;
+  for (auto& e : temp_entries) {
+    queries_by_path[e.path].push_back(&e);
+  }
+
+  for (auto& [path, group] : queries_by_path) {
+    GetBaseAddress(path, group);
+  }
+
+  for (const auto& e : temp_entries) {
+    if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
+      entries[e.start] = e;
+    }
+  }
+
   return entries;
 }
 
