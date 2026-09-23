@@ -2,45 +2,45 @@
 set -euo pipefail
 
 if [ "$#" -lt 4 ]; then
-    echo "Usage: $0 <test_executable> <worker_executable> <strip_path_prefix> <expected_file>"
-    exit 1
+  echo "Usage: $0 <test_executable> <worker_executable> <strip_path_prefix> <expected_file>"
+  exit 1
 fi
 
-TEST_EXE="$1"
-WORKER_EXE="$2"
-STRIP_PREFIX="$3"
-EXPECTED_FILE="$4"
+test_exe="$1"
+worker_exe="$2"
+strip_prefix="$3"
+expected_file="$4"
 
 # Find FileCheck
-FILECHECK=""
+filecheck=""
 if command -v FileCheck >/dev/null 2>&1; then
-    FILECHECK="FileCheck"
+  filecheck="FileCheck"
 else
-    # Look in common LLVM installation paths
-    for p in /usr/lib/llvm-*/bin/FileCheck; do
-        if [ -x "$p" ]; then
-            FILECHECK="$p"
-            break
-        fi
-    done
+  # Look in common LLVM installation paths
+  for p in /usr/lib/llvm-*/bin/FileCheck; do
+    if [ -x "$p" ]; then
+      filecheck="$p"
+      break
+    fi
+  done
 fi
 
-if [ -z "$FILECHECK" ]; then
-    echo "Error: FileCheck not found. Please install llvm package."
-    exit 1
+if [ -z "$filecheck" ]; then
+  echo "Error: FileCheck not found. Please install llvm package."
+  exit 1
 fi
 
-TMP_OUT=$(mktemp)
+tmp_out="$(mktemp)"
 # Run the test, combine stdout and stderr.
-"$TEST_EXE" "$WORKER_EXE" "$STRIP_PREFIX" > "$TMP_OUT" 2>&1 || true
+"$test_exe" "$worker_exe" "$strip_prefix" > "$tmp_out" 2>&1 || true
 
-if "$FILECHECK" "$EXPECTED_FILE" < "$TMP_OUT"; then
-    echo "Output matches expectations."
-    rm -f "$TMP_OUT"
-    exit 0
+if "$filecheck" "$expected_file" < "$tmp_out"; then
+  echo "Output matches expectations."
+  rm -f "$tmp_out"
+  exit 0
 else
-    echo "Output differs from expectations."
-    cat "$TMP_OUT"
-    rm -f "$TMP_OUT"
-    exit 1
+  echo "Output differs from expectations."
+  cat "$tmp_out"
+  rm -f "$tmp_out"
+  exit 1
 fi
