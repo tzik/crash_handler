@@ -116,13 +116,11 @@ void GetBaseAddress(std::string_view path, std::vector<MapEntry>* entries) {
 
     auto hdr_it = valid_headers.begin();
     for (auto& entry : *entries) {
-      while (hdr_it != valid_headers.end() && hdr_it->end <= entry.offset) {
+      while (hdr_it != valid_headers.end() && hdr_it->end <= entry.offset)
         ++hdr_it;
-      }
 
-      if (hdr_it == valid_headers.end()) {
+      if (hdr_it == valid_headers.end())
         break;
-      }
 
       if (entry.offset >= hdr_it->offset_aligned) {
         uintptr_t vaddr_in_file =
