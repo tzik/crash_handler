@@ -1,6 +1,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#ifdef HAVE_PROCMAP_QUERY
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
+
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -104,13 +109,73 @@ void GetBaseAddress(std::string_view path,
   }
 }
 
+#ifdef HAVE_PROCMAP_QUERY
+bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entries_by_path) {
+  std::string maps_path = std::format("/proc/{}/maps", pid);
+  int fd = open(maps_path.c_str(), O_RDONLY);
+  if (fd < 0) return false;
+
+  struct procmap_query q = {};
+  char name_buf[4096];
+  bool success = true;
+
+  q.size = sizeof(q);
+  q.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA | PROCMAP_QUERY_VMA_EXECUTABLE;
+  q.query_addr = 0;
+  q.vma_name_size = sizeof(name_buf);
+  q.vma_name_addr = reinterpret_cast<uintptr_t>(name_buf);
+
+  while (true) {
+    int ret = ioctl(fd, PROCMAP_QUERY, &q);
+    if (ret < 0) {
+      if (errno == ENOTTY || errno == EINVAL) {
+        success = false;
+      }
+      break;
+    }
+
+    if (q.vma_name_size > 0 && name_buf[0] == '/') {
+      MapEntry e;
+      e.start = q.vma_start;
+      e.end = q.vma_end;
+      e.offset = q.vma_offset;
+      e.path = std::string(name_buf, q.vma_name_size - 1);
+      (*entries_by_path)[e.path].push_back(std::move(e));
+    }
+
+    q.query_addr = q.vma_end;
+    q.vma_name_size = sizeof(name_buf);
+  }
+  close(fd);
+
+  if (!success) {
+    entries_by_path->clear();
+  }
+  return success;
+}
+#endif
+
 Maps ReadMaps(pid_t pid) {
   Maps entries;
+  std::map<std::string, std::vector<MapEntry>> entries_by_path;
+
+#ifdef HAVE_PROCMAP_QUERY
+  if (ReadMapsIoctl(pid, &entries_by_path)) {
+    for (auto& [path, group] : entries_by_path) {
+      GetBaseAddress(path, &group);
+      for (auto& e : group) {
+        if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
+          entries[e.start] = std::move(e);
+        }
+      }
+    }
+    return entries;
+  }
+#endif
+
   std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
-
-  std::map<std::string, std::vector<MapEntry>> entries_by_path;
   std::string addr, perms, offset, dev, inode, path;
   while (std::getline(maps, line)) {
     std::istringstream iss(line);

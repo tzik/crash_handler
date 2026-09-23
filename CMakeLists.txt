@@ -26,7 +26,23 @@ target_include_directories(crash_handler PUBLIC
 
 llvm_map_components_to_libnames(llvm_libs Symbolize Object Support)
 
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles("
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+int main() {
+    struct procmap_query q;
+    q.size = sizeof(q);
+    int fd = 0;
+    ioctl(fd, PROCMAP_QUERY, &q);
+    return 0;
+}
+" HAVE_PROCMAP_QUERY)
+
 add_executable(crash_handler_worker src/worker.cc $<TARGET_OBJECTS:crash_util>)
+if(HAVE_PROCMAP_QUERY)
+    target_compile_definitions(crash_handler_worker PRIVATE HAVE_PROCMAP_QUERY)
+endif()
 target_include_directories(crash_handler_worker PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(crash_handler_worker PRIVATE ${LLVM_DEFINITIONS})
 target_link_libraries(crash_handler_worker PRIVATE
