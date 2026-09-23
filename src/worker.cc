@@ -120,7 +120,7 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
   bool success = true;
 
   q.size = sizeof(q);
-  q.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA | PROCMAP_QUERY_VMA_EXECUTABLE;
+  q.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
   q.query_addr = 0;
   q.vma_name_size = sizeof(name_buf);
   q.vma_name_addr = reinterpret_cast<uintptr_t>(name_buf);
@@ -134,7 +134,7 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
       break;
     }
 
-    if (q.vma_name_size > 0 && name_buf[0] == '/') {
+    if ((q.vma_flags & PROCMAP_QUERY_VMA_EXECUTABLE) && q.vma_name_size > 0 && name_buf[0] == '/') {
       MapEntry e;
       e.start = q.vma_start;
       e.end = q.vma_end;
@@ -155,24 +155,7 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
 }
 #endif
 
-Maps ReadMaps(pid_t pid) {
-  Maps entries;
-  std::map<std::string, std::vector<MapEntry>> entries_by_path;
-
-#ifdef HAVE_PROCMAP_QUERY
-  if (ReadMapsIoctl(pid, &entries_by_path)) {
-    for (auto& [path, group] : entries_by_path) {
-      GetBaseAddress(path, &group);
-      for (auto& e : group) {
-        if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
-          entries[e.start] = std::move(e);
-        }
-      }
-    }
-    return entries;
-  }
-#endif
-
+void ReadMapsText(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entries_by_path) {
   std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
@@ -203,8 +186,21 @@ Maps ReadMaps(pid_t pid) {
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
 
-    entries_by_path[e.path].push_back(std::move(e));
+    (*entries_by_path)[e.path].push_back(std::move(e));
   }
+}
+
+Maps ReadMaps(pid_t pid) {
+  Maps entries;
+  std::map<std::string, std::vector<MapEntry>> entries_by_path;
+
+#ifdef HAVE_PROCMAP_QUERY
+  if (!ReadMapsIoctl(pid, &entries_by_path)) {
+    ReadMapsText(pid, &entries_by_path);
+  }
+#else
+  ReadMapsText(pid, &entries_by_path);
+#endif
 
   for (auto& [path, group] : entries_by_path) {
     GetBaseAddress(path, &group);
