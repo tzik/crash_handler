@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 #endif
 
+#include <algorithm>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -81,22 +82,50 @@ void GetBaseAddress(std::string_view path, std::vector<MapEntry>* entries) {
       return;
     }
 
+    struct PhdrInfo {
+      uintptr_t offset_aligned;
+      uintptr_t end;
+      uintptr_t vaddr;
+    };
+
+    std::vector<PhdrInfo> valid_headers;
+    for (const auto& phdr : *headers) {
+      if (phdr.p_type != llvm::ELF::PT_LOAD ||
+          (phdr.p_flags & llvm::ELF::PF_X) == 0)
+        continue;
+
+      PhdrInfo info;
+      info.offset_aligned = phdr.p_offset & ~(page_size - 1);
+      info.end =
+          (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+      info.vaddr = phdr.p_vaddr & ~(page_size - 1);
+      valid_headers.push_back(info);
+    }
+
+    std::sort(valid_headers.begin(), valid_headers.end(),
+              [](const PhdrInfo& a, const PhdrInfo& b) {
+                if (a.offset_aligned != b.offset_aligned)
+                  return a.offset_aligned < b.offset_aligned;
+                return a.end < b.end;
+              });
+
+    std::sort(entries->begin(), entries->end(),
+              [](const MapEntry& a, const MapEntry& b) {
+                return a.offset < b.offset;
+              });
+
+    auto hdr_it = valid_headers.begin();
     for (auto& entry : *entries) {
-      for (const auto& phdr : *headers) {
-        if (phdr.p_type != llvm::ELF::PT_LOAD ||
-            (phdr.p_flags & llvm::ELF::PF_X) == 0)
-          continue;
+      while (hdr_it != valid_headers.end() && hdr_it->end <= entry.offset)
+        ++hdr_it;
 
-        uintptr_t phdr_offset_aligned = phdr.p_offset & ~(page_size - 1);
-        uintptr_t phdr_end =
-            (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
+      if (hdr_it == valid_headers.end())
+        break;
 
-        if (entry.offset >= phdr_offset_aligned && entry.offset < phdr_end) {
-          uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                    (entry.offset - phdr_offset_aligned);
-          entry.base_address = entry.start - vaddr_in_file;
-          break;
-        }
+      if (entry.offset >= hdr_it->offset_aligned) {
+        uintptr_t vaddr_in_file =
+            hdr_it->vaddr + (entry.offset - hdr_it->offset_aligned);
+        entry.base_address = entry.start - vaddr_in_file;
       }
     }
   };
