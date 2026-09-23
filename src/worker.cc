@@ -112,8 +112,8 @@ void GetBaseAddress(std::string_view path,
 #ifdef HAVE_PROCMAP_QUERY
 bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entries_by_path) {
   std::string maps_path = std::format("/proc/{}/maps", pid);
-  int fd = open(maps_path.c_str(), O_RDONLY);
-  if (fd < 0) return false;
+  unique_fd fd(open(maps_path.c_str(), O_RDONLY));
+  if (!fd.is_valid()) return false;
 
   struct procmap_query q = {};
   char name_buf[4096];
@@ -126,7 +126,7 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
   q.vma_name_addr = reinterpret_cast<uintptr_t>(name_buf);
 
   while (true) {
-    int ret = ioctl(fd, PROCMAP_QUERY, &q);
+    int ret = ioctl(fd.get(), PROCMAP_QUERY, &q);
     if (ret < 0) {
       if (errno == ENOTTY || errno == EINVAL) {
         success = false;
@@ -146,7 +146,6 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
     q.query_addr = q.vma_end;
     q.vma_name_size = sizeof(name_buf);
   }
-  close(fd);
 
   if (!success) {
     entries_by_path->clear();
