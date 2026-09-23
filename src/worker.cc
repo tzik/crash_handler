@@ -49,7 +49,7 @@ using Frames = std::vector<FrameInfo>;
 using Symbols = std::vector<SymbolInfo>;
 
 void GetBaseAddress(std::string_view path,
-                    std::vector<MapEntry*>& entries) {
+                    std::vector<MapEntry>* entries) {
   auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
   if (!error_or_mem_buf)
     return;
@@ -75,7 +75,7 @@ void GetBaseAddress(std::string_view path,
       return;
     }
 
-    for (auto* entry : entries) {
+    for (auto& entry : *entries) {
       for (const auto& phdr : *headers) {
         if (phdr.p_type != llvm::ELF::PT_LOAD ||
             (phdr.p_flags & llvm::ELF::PF_X) == 0)
@@ -85,10 +85,10 @@ void GetBaseAddress(std::string_view path,
         uintptr_t phdr_end =
             (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
 
-        if (entry->offset >= phdr_offset_aligned && entry->offset < phdr_end) {
+        if (entry.offset >= phdr_offset_aligned && entry.offset < phdr_end) {
           uintptr_t vaddr_in_file = (phdr.p_vaddr & ~(page_size - 1)) +
-                                    (entry->offset - phdr_offset_aligned);
-          entry->base_address = entry->start - vaddr_in_file;
+                                    (entry.offset - phdr_offset_aligned);
+          entry.base_address = entry.start - vaddr_in_file;
           break;
         }
       }
@@ -110,7 +110,7 @@ Maps ReadMaps(pid_t pid) {
   std::ifstream maps(maps_path);
   std::string line;
 
-  std::vector<MapEntry> temp_entries;
+  std::map<std::string, std::vector<MapEntry>> queries_by_path;
   std::string addr, perms, offset, dev, inode, path;
   while (std::getline(maps, line)) {
     std::istringstream iss(line);
@@ -138,21 +138,15 @@ Maps ReadMaps(pid_t pid) {
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
 
-    temp_entries.push_back(e);
-  }
-
-  std::map<std::string, std::vector<MapEntry*>> queries_by_path;
-  for (auto& e : temp_entries) {
-    queries_by_path[e.path].push_back(&e);
+    queries_by_path[e.path].push_back(std::move(e));
   }
 
   for (auto& [path, group] : queries_by_path) {
-    GetBaseAddress(path, group);
-  }
-
-  for (const auto& e : temp_entries) {
-    if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
-      entries[e.start] = e;
+    GetBaseAddress(path, &group);
+    for (const auto& e : group) {
+      if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
+        entries[e.start] = e;
+      }
     }
   }
 
