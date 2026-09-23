@@ -53,7 +53,7 @@ target_link_libraries(test_crash PRIVATE crash_handler)
 
 include(CTest)
 if(BUILD_TESTING)
-  add_test(NAME crash_test COMMAND test_crash $<TARGET_FILE:crash_handler_worker>)
+  add_test(NAME crash_test COMMAND test_crash $<TARGET_FILE:crash_handler_worker> ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # Installation
