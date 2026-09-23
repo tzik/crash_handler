@@ -7,8 +7,8 @@
 #include <unwind.h>
 
 #include <cstdint>
+#include <mutex>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "trace_packet.h"
@@ -18,6 +18,7 @@ extern char** environ;
 
 namespace {
 
+std::once_flag initialize_once;
 int worker_stdin_fd = -1;
 int worker_stdout_fd = -1;
 
@@ -105,6 +106,9 @@ bool SpawnWorker(const char* worker_path, const char* path_prefix) {
   unique_fd to_worker_read, to_worker_write;
   unique_fd from_worker_read, from_worker_write;
 
+  if (!worker_path)
+    return false;
+
   if (!MakePipe(&to_worker_read, &to_worker_write, O_CLOEXEC) ||
       !MakePipe(&from_worker_read, &from_worker_write, O_CLOEXEC)) {
     return false;
@@ -119,7 +123,8 @@ bool SpawnWorker(const char* worker_path, const char* path_prefix) {
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
 
-    posix_spawn_file_actions_adddup2(&actions, to_worker_read.get(), STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, to_worker_read.get(),
+                                     STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions, from_worker_write.get(),
                                      STDOUT_FILENO);
 
@@ -154,6 +159,8 @@ void InstallSignalHandlers() {
 }  // namespace
 
 void SetUpCrashHandler(const char* worker_path, const char* path_prefix) {
-  if (SpawnWorker(worker_path, path_prefix))
-    InstallSignalHandlers();
+  std::call_once(initialize_once, [&] {
+    if (SpawnWorker(worker_path, path_prefix))
+      InstallSignalHandlers();
+  });
 }

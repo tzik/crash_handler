@@ -11,9 +11,9 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
@@ -49,12 +49,13 @@ struct SymbolInfo {
 };
 
 using Maps = std::map<uintptr_t, MapEntry>;
-using ProcessMaps = std::map<pid_t, Maps>;
+using ProcessMaps = std::unordered_map<pid_t, Maps>;
 using Frames = std::vector<FrameInfo>;
 using Symbols = std::vector<SymbolInfo>;
+using BaseAddressQueries =
+    std::unordered_map<std::string, std::vector<MapEntry>>;
 
-void GetBaseAddress(std::string_view path,
-                    std::vector<MapEntry>* entries) {
+void GetBaseAddress(std::string_view path, std::vector<MapEntry>* entries) {
   auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
   if (!error_or_mem_buf)
     return;
@@ -110,7 +111,7 @@ void GetBaseAddress(std::string_view path,
 }
 
 #ifdef HAVE_PROCMAP_QUERY
-bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entries_by_path) {
+bool ReadMapsIoctl(pid_t pid, BaseAddressQueries* entries_by_path) {
   std::string maps_path = std::format("/proc/{}/maps", pid);
   unique_fd fd(open(maps_path.c_str(), O_RDONLY));
   if (!fd.is_valid())
@@ -127,7 +128,8 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
 
   int ret;
   while ((ret = ioctl(fd.get(), PROCMAP_QUERY, &q)) == 0) {
-    if ((q.vma_flags & PROCMAP_QUERY_VMA_EXECUTABLE) && q.vma_name_size > 0 && name_buf[0] == '/') {
+    if ((q.vma_flags & PROCMAP_QUERY_VMA_EXECUTABLE) && q.vma_name_size > 0 &&
+        name_buf[0] == '/') {
       MapEntry e;
       e.start = q.vma_start;
       e.end = q.vma_end;
@@ -149,7 +151,7 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
 }
 #endif
 
-void ReadMapsText(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entries_by_path) {
+void ReadMapsText(pid_t pid, BaseAddressQueries* entries_by_path) {
   std::string maps_path = std::format("/proc/{}/maps", pid);
   std::ifstream maps(maps_path);
   std::string line;
@@ -186,7 +188,7 @@ void ReadMapsText(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entri
 
 Maps ReadMaps(pid_t pid) {
   Maps entries;
-  std::map<std::string, std::vector<MapEntry>> entries_by_path;
+  BaseAddressQueries entries_by_path;
 
 #ifdef HAVE_PROCMAP_QUERY
   if (!ReadMapsIoctl(pid, &entries_by_path))
