@@ -5,9 +5,8 @@
 std::vector<char*> MakeArgV(std::vector<std::string>* args) {
   std::vector<char*> argv;
   argv.reserve(args->size() + 1);
-  for (auto& arg : *args) {
+  for (auto& arg : *args)
     argv.push_back(arg.data());
-  }
   argv.push_back(nullptr);
   return argv;
 }
@@ -50,8 +49,7 @@ unique_fd::~unique_fd() {
 }
 
 void unique_fd::reset(int new_fd) {
-  if (fd_ >= 0) {
+  if (fd_ >= 0)
     close(fd_);
-  }
   fd_ = new_fd;
 }

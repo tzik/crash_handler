@@ -20,9 +20,8 @@ class unique_fd {
 
   unique_fd(unique_fd&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
   unique_fd& operator=(unique_fd&& other) noexcept {
-    if (this != &other) {
+    if (this != &other)
       reset(other.release());
-    }
     return *this;
   }
 
