@@ -80,7 +80,7 @@ void GetBaseAddress(std::string_view path,
       return;
     }
 
-    for (auto& entry : *entries)
+    for (auto& entry : *entries) {
       for (const auto& phdr : *headers) {
         if (phdr.p_type != llvm::ELF::PT_LOAD ||
             (phdr.p_flags & llvm::ELF::PF_X) == 0)
@@ -97,14 +97,16 @@ void GetBaseAddress(std::string_view path,
           break;
         }
       }
+    }
   };
 
   if (auto* elf_32_le =
-          llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base))
+          llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
     process_obj(elf_32_le);
-  else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(
-                 elf_obj_base))
+  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(
+                 elf_obj_base)) {
     process_obj(elf_64_le);
+  }
 }
 
 #ifdef HAVE_PROCMAP_QUERY
@@ -195,9 +197,10 @@ Maps ReadMaps(pid_t pid) {
 
   for (auto& [path, group] : entries_by_path) {
     GetBaseAddress(path, &group);
-    for (auto& e : group)
+    for (auto& e : group) {
       if (e.base_address != std::numeric_limits<uintptr_t>::max())
         entries[e.start] = std::move(e);
+    }
   }
 
   return entries;
