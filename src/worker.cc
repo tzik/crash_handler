@@ -110,7 +110,7 @@ Maps ReadMaps(pid_t pid) {
   std::ifstream maps(maps_path);
   std::string line;
 
-  std::map<std::string, std::vector<MapEntry>> queries_by_path;
+  std::map<std::string, std::vector<MapEntry>> entries_by_path;
   std::string addr, perms, offset, dev, inode, path;
   while (std::getline(maps, line)) {
     std::istringstream iss(line);
@@ -138,14 +138,14 @@ Maps ReadMaps(pid_t pid) {
     e.offset = std::stoull(offset, nullptr, 16);
     e.path = path;
 
-    queries_by_path[e.path].push_back(std::move(e));
+    entries_by_path[e.path].push_back(std::move(e));
   }
 
-  for (auto& [path, group] : queries_by_path) {
+  for (auto& [path, group] : entries_by_path) {
     GetBaseAddress(path, &group);
-    for (const auto& e : group) {
+    for (auto& e : group) {
       if (e.base_address != std::numeric_limits<uintptr_t>::max()) {
-        entries[e.start] = e;
+        entries[e.start] = std::move(e);
       }
     }
   }
