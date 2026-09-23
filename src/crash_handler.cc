@@ -21,6 +21,16 @@ namespace {
 int worker_stdin_fd = -1;
 int worker_stdout_fd = -1;
 
+bool MakePipe(unique_fd* read_fd, unique_fd* write_fd, int flags) {
+  int fds[2];
+  if (pipe2(fds, flags) < 0) {
+    return false;
+  }
+  read_fd->reset(fds[0]);
+  write_fd->reset(fds[1]);
+  return true;
+}
+
 struct SignalHandlerPair {
   int signo;
   struct sigaction old_handler;
@@ -92,13 +102,12 @@ __attribute__((noinline)) void CrashSignalHandler(int signo,
 }
 
 bool SpawnWorker(const char* worker_path, const char* path_prefix) {
-  int pipe_to_worker[2] = {-1, -1};
-  int pipe_from_worker[2] = {-1, -1};
-  bool success = false;
+  unique_fd to_worker_read, to_worker_write;
+  unique_fd from_worker_read, from_worker_write;
 
-  if (pipe2(pipe_to_worker, O_CLOEXEC) < 0 ||
-      pipe2(pipe_from_worker, O_CLOEXEC) < 0) {
-    goto cleanup;
+  if (!MakePipe(&to_worker_read, &to_worker_write, O_CLOEXEC) ||
+      !MakePipe(&from_worker_read, &from_worker_write, O_CLOEXEC)) {
+    return false;
   }
 
   {
@@ -110,38 +119,26 @@ bool SpawnWorker(const char* worker_path, const char* path_prefix) {
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
 
-    posix_spawn_file_actions_adddup2(&actions, pipe_to_worker[0], STDIN_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, pipe_from_worker[1],
+    posix_spawn_file_actions_adddup2(&actions, to_worker_read.get(), STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, from_worker_write.get(),
                                      STDOUT_FILENO);
 
-    posix_spawn_file_actions_addclose(&actions, pipe_to_worker[1]);
-    posix_spawn_file_actions_addclose(&actions, pipe_from_worker[0]);
+    posix_spawn_file_actions_addclose(&actions, to_worker_write.get());
+    posix_spawn_file_actions_addclose(&actions, from_worker_read.get());
 
     if (posix_spawn(nullptr, worker_path, &actions, nullptr, argv.data(),
                     environ) < 0) {
       posix_spawn_file_actions_destroy(&actions);
-      goto cleanup;
+      return false;
     }
 
     posix_spawn_file_actions_destroy(&actions);
   }
 
-  worker_stdin_fd = std::exchange(pipe_to_worker[1], -1);
-  worker_stdout_fd = std::exchange(pipe_from_worker[0], -1);
+  worker_stdin_fd = to_worker_write.release();
+  worker_stdout_fd = from_worker_read.release();
 
-  success = true;
-
-cleanup:
-  if (pipe_to_worker[0] >= 0)
-    close(pipe_to_worker[0]);
-  if (pipe_to_worker[1] >= 0)
-    close(pipe_to_worker[1]);
-  if (pipe_from_worker[0] >= 0)
-    close(pipe_from_worker[0]);
-  if (pipe_from_worker[1] >= 0)
-    close(pipe_from_worker[1]);
-
-  return success;
+  return true;
 }
 
 void InstallSignalHandlers() {
