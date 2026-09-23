@@ -117,7 +117,6 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
 
   struct procmap_query q = {};
   char name_buf[4096];
-  bool success = true;
 
   q.size = sizeof(q);
   q.query_flags = PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
@@ -125,15 +124,8 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
   q.vma_name_size = sizeof(name_buf);
   q.vma_name_addr = reinterpret_cast<uintptr_t>(name_buf);
 
-  while (true) {
-    int ret = ioctl(fd.get(), PROCMAP_QUERY, &q);
-    if (ret < 0) {
-      if (errno == ENOTTY || errno == EINVAL) {
-        success = false;
-      }
-      break;
-    }
-
+  int ret;
+  while ((ret = ioctl(fd.get(), PROCMAP_QUERY, &q)) == 0) {
     if ((q.vma_flags & PROCMAP_QUERY_VMA_EXECUTABLE) && q.vma_name_size > 0 && name_buf[0] == '/') {
       MapEntry e;
       e.start = q.vma_start;
@@ -147,10 +139,12 @@ bool ReadMapsIoctl(pid_t pid, std::map<std::string, std::vector<MapEntry>>* entr
     q.vma_name_size = sizeof(name_buf);
   }
 
-  if (!success) {
+  if (ret < 0 && (errno == ENOTTY || errno == EINVAL)) {
     entries_by_path->clear();
+    return false;
   }
-  return success;
+
+  return true;
 }
 #endif
 

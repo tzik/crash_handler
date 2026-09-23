@@ -44,3 +44,14 @@ void WriteFully(int fd, const void* data, size_t size) {
     to_write -= res;
   }
 }
+
+unique_fd::~unique_fd() {
+  reset();
+}
+
+void unique_fd::reset(int new_fd) {
+  if (fd_ >= 0) {
+    close(fd_);
+  }
+  fd_ = new_fd;
+}
