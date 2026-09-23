@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [ "$#" -lt 4 ]; then
-  echo "Usage: $0 <test_executable> <worker_executable> <strip_path_prefix> <expected_file>"
+  echo "Usage: $0 <test_executable> <worker_executable> <path_prefix> <expected_file>"
   exit 1
 fi
 
 test_exe="$1"
 worker_exe="$2"
-strip_prefix="$3"
+path_prefix="$3"
 expected_file="$4"
 
 # Find FileCheck
@@ -32,7 +32,7 @@ fi
 
 tmp_out="$(mktemp)"
 # Run the test, combine stdout and stderr.
-"$test_exe" "$worker_exe" "$strip_prefix" > "$tmp_out" 2>&1 || true
+"$test_exe" "$worker_exe" "$path_prefix" > "$tmp_out" 2>&1 || true
 
 if "$filecheck" "$expected_file" < "$tmp_out"; then
   echo "Output matches expectations."
