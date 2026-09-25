@@ -83,3 +83,9 @@ configure_package_config_file(
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/CrashHandlerConfig.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/CrashHandler
 )
+
+target_sources(crash_handler_worker PRIVATE
+    src/dwarf/elf_parser.cc
+    src/dwarf/leb128.cc
+    src/dwarf/dwarf.cc
+)
