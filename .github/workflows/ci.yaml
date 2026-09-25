@@ -6,14 +6,26 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+        compiler: [gcc, clang]
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v4
     - run: |
         sudo apt-get update
         sudo apt-get install -y pkg-config llvm-dev libzstd-dev cmake
-    - run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        if [ "${{ matrix.compiler }}" = "clang" ]; then
+          sudo apt-get install -y clang
+        fi
+    - run: |
+        if [ "${{ matrix.compiler }}" = "clang" ]; then
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++
+        else
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        fi
     - run: cmake --build build -j$(nproc)
     - working-directory: ./build
       run: ctest --output-on-failure

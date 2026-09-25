@@ -36,6 +36,12 @@ struct MapEntry {
 };
 
 struct FrameInfo {
+  FrameInfo(int frame_index, uintptr_t addr, const MapEntry* entry, uintptr_t offset_in_module)
+      : frame_index(frame_index),
+        addr(addr),
+        entry(entry),
+        offset_in_module(offset_in_module) {}
+
   int frame_index = 0;
   uintptr_t addr = 0;
   const MapEntry* entry = nullptr;
@@ -43,6 +49,13 @@ struct FrameInfo {
 };
 
 struct SymbolInfo {
+  SymbolInfo(const FrameInfo* frame) : frame(frame) {}
+  SymbolInfo(const FrameInfo* frame, std::string function, std::string file, int line)
+      : frame(frame),
+        function(std::move(function)),
+        file(std::move(file)),
+        line(line) {}
+
   const FrameInfo* frame = nullptr;
   std::string function;
   std::string file;
@@ -254,12 +267,12 @@ Frames PopulateFrames(const TracePacket& data, const Maps& maps) {
     }
 
     if (!entry) {
-      frames.emplace_back(i, addr, nullptr, 0);
+      frames.push_back({i, addr, nullptr, 0});
       continue;
     }
 
     uintptr_t offset_in_module = addr - entry->base_address;
-    frames.emplace_back(i, addr, entry, offset_in_module);
+    frames.push_back({i, addr, entry, offset_in_module});
   }
 
   return frames;
@@ -271,7 +284,7 @@ Symbols Symbolize(llvm::symbolize::LLVMSymbolizer& symbolizer,
   symbols.reserve(2 * frames.size());
 
   for (const auto& frame : frames) {
-    symbols.emplace_back(&frame);
+    symbols.push_back({&frame});
 
     if (!frame.entry)
       continue;
@@ -295,8 +308,8 @@ Symbols Symbolize(llvm::symbolize::LLVMSymbolizer& symbolizer,
       std::string_view function = sym.FunctionName;
       std::string_view file = sym.FileName;
       int line = sym.Line;
-      symbols.emplace_back(&frame, std::string(function), std::string(file),
-                           line);
+      symbols.push_back({&frame, std::string(function), std::string(file),
+                           line});
     }
   }
   return symbols;
