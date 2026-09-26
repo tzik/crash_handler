@@ -17,23 +17,13 @@
 #include <unordered_map>
 #include <vector>
 
-#include "llvm/DebugInfo/Symbolize/Symbolize.h"
-#include "llvm/Object/ELFObjectFile.h"
-#include "llvm/Support/Error.h"
-#include "llvm/Support/MemoryBuffer.h"
-
 #include "trace_packet.h"
 #include "util.h"
+#include "map_entry.h"
+#include "dwarf/elf_parser.h"
+#include "dwarf/dwarf.h"
 
 namespace {
-
-struct MapEntry {
-  uintptr_t start = 0;
-  uintptr_t end = 0;
-  uintptr_t offset = 0;
-  std::string path;
-  uintptr_t base_address = std::numeric_limits<uintptr_t>::max();
-};
 
 struct FrameInfo {
   int frame_index = 0;
@@ -57,85 +47,10 @@ using BaseAddressQueries =
     std::unordered_map<std::string, std::vector<MapEntry>>;
 
 void GetBaseAddress(std::string_view path, std::vector<MapEntry>* entries) {
-  auto error_or_mem_buf = llvm::MemoryBuffer::getFile(path);
-  if (!error_or_mem_buf)
-    return;
-
-  auto exp_binary =
-      llvm::object::createBinary(error_or_mem_buf.get()->getMemBufferRef());
-  if (!exp_binary) {
-    llvm::consumeError(exp_binary.takeError());
-    return;
-  }
-
-  llvm::object::Binary* bin = exp_binary.get().get();
-  auto* elf_obj_base = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(bin);
-  if (!elf_obj_base)
-    return;
-
-  uintptr_t page_size = sysconf(_SC_PAGESIZE);
-
-  auto process_obj = [&](const auto* obj) {
-    auto headers = obj->getELFFile().program_headers();
-    if (!headers) {
-      llvm::consumeError(headers.takeError());
-      return;
-    }
-
-    struct PhdrInfo {
-      uintptr_t offset_aligned;
-      uintptr_t end;
-      uintptr_t vaddr;
-    };
-
-    std::vector<PhdrInfo> valid_headers;
-    for (const auto& phdr : *headers) {
-      if (phdr.p_type != llvm::ELF::PT_LOAD ||
-          (phdr.p_flags & llvm::ELF::PF_X) == 0)
-        continue;
-
-      PhdrInfo info;
-      info.offset_aligned = phdr.p_offset & ~(page_size - 1);
-      info.end =
-          (phdr.p_offset + phdr.p_filesz + page_size - 1) & ~(page_size - 1);
-      info.vaddr = phdr.p_vaddr & ~(page_size - 1);
-      valid_headers.push_back(info);
-    }
-
-    std::sort(valid_headers.begin(), valid_headers.end(),
-              [](const PhdrInfo& a, const PhdrInfo& b) {
-                if (a.offset_aligned != b.offset_aligned)
-                  return a.offset_aligned < b.offset_aligned;
-                return a.end < b.end;
-              });
-
-    std::sort(entries->begin(), entries->end(),
-              [](const MapEntry& a, const MapEntry& b) {
-                return a.offset < b.offset;
-              });
-
-    auto hdr_it = valid_headers.begin();
-    for (auto& entry : *entries) {
-      while (hdr_it != valid_headers.end() && hdr_it->end <= entry.offset)
-        ++hdr_it;
-
-      if (hdr_it == valid_headers.end())
-        break;
-
-      if (entry.offset >= hdr_it->offset_aligned) {
-        uintptr_t vaddr_in_file =
-            hdr_it->vaddr + (entry.offset - hdr_it->offset_aligned);
-        entry.base_address = entry.start - vaddr_in_file;
-      }
-    }
-  };
-
-  if (auto* elf_32_le =
-          llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(elf_obj_base)) {
-    process_obj(elf_32_le);
-  } else if (auto* elf_64_le = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(
-                 elf_obj_base)) {
-    process_obj(elf_64_le);
+  std::string path_str(path);
+  ElfParser parser(path_str);
+  if (parser.is_valid()) {
+    parser.calculate_base_addresses(entries->data(), entries->size());
   }
 }
 
@@ -265,10 +180,12 @@ Frames PopulateFrames(const TracePacket& data, const Maps& maps) {
   return frames;
 }
 
-Symbols Symbolize(llvm::symbolize::LLVMSymbolizer& symbolizer,
-                  const Frames& frames) {
+#include <string.h>
+Symbols Symbolize(const Frames& frames) {
   Symbols symbols;
   symbols.reserve(2 * frames.size());
+
+  std::unordered_map<std::string, DwarfParser*> dwarf_parsers;
 
   for (const auto& frame : frames) {
     symbols.emplace_back(&frame);
@@ -276,29 +193,31 @@ Symbols Symbolize(llvm::symbolize::LLVMSymbolizer& symbolizer,
     if (!frame.entry)
       continue;
 
-    auto res_or_err = symbolizer.symbolizeInlinedCode(
-        frame.entry->path,
-        {frame.offset_in_module, llvm::object::SectionedAddress::UndefSection});
-
-    if (!res_or_err) {
-      llvm::consumeError(res_or_err.takeError());
-      continue;
+    auto& path = frame.entry->path;
+    if (dwarf_parsers.find(path) == dwarf_parsers.end()) {
+        ElfParser elf(path);
+        dwarf_parsers[path] = new DwarfParser(elf);
     }
 
-    const auto& inlining_info = res_or_err.get();
-    int num_frames = inlining_info.getNumberOfFrames();
-    if (num_frames)
-      symbols.pop_back();
+    DwarfParser* parser = dwarf_parsers[path];
+    auto inline_frames = parser->symbolize(frame.offset_in_module);
 
-    for (int j = 0; j < num_frames; ++j) {
-      const llvm::DILineInfo& sym = inlining_info.getFrame(j);
-      std::string_view function = sym.FunctionName;
-      std::string_view file = sym.FileName;
-      int line = sym.Line;
-      symbols.emplace_back(&frame, std::string(function), std::string(file),
-                           line);
+    if (!inline_frames.empty()) {
+        symbols.pop_back(); // Remove the empty symbol we just added
+    } else {
+        continue; // Keep the empty symbol
+    }
+
+    for (const auto& inlined_frame : inline_frames) {
+      symbols.emplace_back(&frame, inlined_frame.function_name, inlined_frame.file_name,
+                           inlined_frame.line);
     }
   }
+
+  for (auto& pair : dwarf_parsers) {
+      delete pair.second;
+  }
+
   return symbols;
 }
 
@@ -328,8 +247,7 @@ void PrintSymbol(std::ostream& out,
   out << "\n";
 }
 
-void ProcessTracePacket(llvm::symbolize::LLVMSymbolizer& symbolizer,
-                        const TracePacket& data,
+void ProcessTracePacket(const TracePacket& data,
                         ProcessMaps& process_maps,
                         std::string_view path_prefix) {
   pid_t pid = data.process_id;
@@ -343,7 +261,7 @@ void ProcessTracePacket(llvm::symbolize::LLVMSymbolizer& symbolizer,
   if (inserted)
     maps = ReadMaps(pid);
   Frames frames = PopulateFrames(data, maps);
-  Symbols symbols = Symbolize(symbolizer, frames);
+  Symbols symbols = Symbolize(frames);
   for (auto&& symbol : symbols)
     PrintSymbol(std::cerr, symbol, path_prefix);
 
@@ -363,12 +281,11 @@ int main(int argc, char** argv) {
       path_prefix += "/";
   }
 
-  llvm::symbolize::LLVMSymbolizer symbolizer;
   ProcessMaps process_maps;
 
   TracePacket packet;
   while (ReadFully(STDIN_FILENO, &packet, sizeof(packet)))
-    ProcessTracePacket(symbolizer, packet, process_maps, path_prefix);
+    ProcessTracePacket(packet, process_maps, path_prefix);
 
   return 0;
 }
